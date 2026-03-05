@@ -33,9 +33,8 @@ interface DetectedLine {
   yBottom: number;
 }
 
-// Canvas-based word crop component — draws directly from the loaded image
-// If word coordinates are null, estimates position from character proportions (RTL)
-function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
+// Shows the full line crop with the target word's approximate area highlighted
+function WordInLineCanvas({ imgEl, word, line, maxHeight = 50 }: {
   imgEl: HTMLImageElement | null;
   word: Word;
   line: Line;
@@ -47,50 +46,50 @@ function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
     const canvas = canvasRef.current;
     if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
 
-    let xLeft = word.xLeft;
-    let xRight = word.xRight;
-
-    // Estimate word bounds from character proportions when coordinates are missing
-    if (xLeft == null || xRight == null) {
-      const imgW = imgEl.naturalWidth;
-      const words = line.words;
-      const totalChars = words.reduce((sum, w) => sum + (w.correctedText || w.rawText).length, 0);
-      if (totalChars === 0) return;
-
-      // Add spacing between words (1 char worth per gap)
-      const totalWithSpaces = totalChars + Math.max(0, words.length - 1);
-      const charWidth = imgW / totalWithSpaces;
-      const padding = charWidth * 0.5; // extra padding on each side
-
-      // RTL: first word is at the right edge
-      let offset = 0;
-      for (const w of words) {
-        const wLen = (w.correctedText || w.rawText).length;
-        if (w.id === word.id) {
-          // RTL: x position from right
-          xRight = Math.min(imgW, Math.round(imgW - offset * charWidth + padding));
-          xLeft = Math.max(0, Math.round(imgW - (offset + wLen) * charWidth - padding));
-          break;
-        }
-        offset += wLen + 1; // +1 for space
-      }
-    }
-
-    if (xLeft == null || xRight == null) return;
-    const srcW = xRight - xLeft;
+    const imgW = imgEl.naturalWidth;
     const srcH = line.yBottom - line.yTop;
-    if (srcW <= 0 || srcH <= 0) return;
+    if (srcH <= 0) return;
 
-    const scale = Math.min(2, maxHeight / srcH);
-    canvas.width = Math.max(20, Math.round(srcW * scale));
+    const scale = Math.min(1.5, maxHeight / srcH);
+    canvas.width = Math.round(imgW * scale);
     canvas.height = Math.max(15, Math.round(srcH * scale));
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(imgEl, xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
+
+    // Draw the full line
+    ctx.drawImage(imgEl, 0, line.yTop, imgW, srcH, 0, 0, canvas.width, canvas.height);
+
+    // Estimate word position and highlight it
+    const words = line.words;
+    const totalChars = words.reduce((sum, w) => sum + (w.correctedText || w.rawText).length, 0);
+    if (totalChars === 0) return;
+
+    const totalWithSpaces = totalChars + Math.max(0, words.length - 1);
+    const charW = canvas.width / totalWithSpaces;
+
+    // RTL: first word starts at right edge
+    let offset = 0;
+    for (const w of words) {
+      const wLen = (w.correctedText || w.rawText).length;
+      if (w.id === word.id) {
+        const xRight = canvas.width - offset * charW;
+        const xLeft = canvas.width - (offset + wLen) * charW;
+        // Dim everything outside the word area
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        ctx.fillRect(0, 0, Math.max(0, xLeft), canvas.height);
+        ctx.fillRect(Math.min(canvas.width, xRight), 0, canvas.width, canvas.height);
+        // Highlight border around word
+        ctx.strokeStyle = "#3b82f6";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(Math.max(0, xLeft), 0, xRight - xLeft, canvas.height);
+        break;
+      }
+      offset += wLen + 1;
+    }
   }, [imgEl, word, line, maxHeight]);
 
-  return <canvas ref={canvasRef} className="block" />;
+  return <canvas ref={canvasRef} className="block w-full" />;
 }
 
 // Canvas-based line crop for review mode
@@ -532,19 +531,8 @@ export default function EditorPage() {
                           "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
                         }`}
                       >
-                        {/* Handwriting crop via canvas */}
-                        <div className="bg-white">
-                          <WordCropCanvas
-                            imgEl={imgEl}
-                            word={word}
-                            line={line}
-                            maxHeight={50}
-                            key={`wc-${word.id}-${imageVersion}`}
-                          />
-                        </div>
-
-                        {/* OCR text */}
-                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium border-t ${
+                        {/* OCR text — line image is shown above the word row */}
+                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : ""
                         }`} dir="rtl">
@@ -585,7 +573,7 @@ export default function EditorPage() {
 
         {/* Word handwriting crop — large and centered */}
         <div className="flex justify-center border rounded-xl overflow-hidden bg-white p-2">
-          <WordCropCanvas imgEl={imgEl} word={reviewWord} line={reviewLine} maxHeight={100} key={`rwc-${reviewWord.id}-${imageVersion}`} />
+          <WordInLineCanvas imgEl={imgEl} word={reviewWord} line={reviewLine} maxHeight={100} key={`rwc-${reviewWord.id}-${imageVersion}`} />
         </div>
 
         {/* Focused word text */}
@@ -857,7 +845,7 @@ export default function EditorPage() {
               {/* Top row on mobile: crop + OCR text */}
               <div className="flex items-center gap-2 sm:gap-3">
                 <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[120px] sm:max-w-[200px]">
-                  <WordCropCanvas
+                  <WordInLineCanvas
                     imgEl={imageRef.current}
                     word={selectedWord}
                     line={selectedLine}

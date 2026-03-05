@@ -258,33 +258,37 @@ interface TrainingImage {
   text: string;
 }
 
-async function ocrSingleLine(
-  lineCropBase64: string,
-  lineIndex: number,
-  totalLines: number,
+// Send the full page image to Opus and get all lines transcribed at once.
+// This gives the model full context and is more accurate than per-line crops.
+async function ocrFullPage(
+  imageBase64: string,
+  mediaType: string,
+  lineCount: number,
   trainingExamples: TrainingImage[],
-  fewShotHint?: string,
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  fewShotHints: Map<number, string>,
+): Promise<{ lines: string[]; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
-    "You are a Hebrew handwriting OCR. You receive images of handwritten Hebrew lines.\n" +
-    "Your response must be ONLY Hebrew characters, spaces, and punctuation. Nothing else.\n" +
+    "You are a Hebrew handwriting OCR. You receive a full page of handwritten Hebrew text.\n" +
+    "The page has been analyzed and contains " + lineCount + " lines of text.\n\n" +
+    "Output EXACTLY " + lineCount + " lines, one per line, in order from top to bottom.\n" +
+    "Each line should contain ONLY the Hebrew characters, spaces, and punctuation for that line.\n" +
     "NEVER output English. NEVER describe the image. NEVER explain anything.\n" +
-    "If the image is blank or unreadable, output only: [?]\n\n" +
+    "If a line is blank or unreadable, output: [?]\n\n" +
     "Rules:\n" +
-    "- Read each letter shape from the ink on the LAST image. Do not guess from context.\n" +
-    "- Reference images are provided to show how THIS writer forms letters — study them.\n" +
-    "- The new line will have DIFFERENT text than the references. Read what is actually written.\n" +
+    "- Read each letter shape carefully from the actual ink strokes. Do not guess from context.\n" +
     "- Do not auto-complete from Torah, Talmud, or any known text.\n" +
     "- These are personal notes — text won't match any known source.\n" +
-    "- Use [?] for any letter you cannot read.\n" +
-    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
+    "- Use [?] for any letter you genuinely cannot read.\n" +
+    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה\n" +
+    "- Output exactly " + lineCount + " lines — no more, no less.";
 
   const content: Anthropic.MessageCreateParams["messages"][0]["content"] = [];
 
+  // Training examples first
   if (trainingExamples.length > 0) {
     content.push({
       type: "text",
-      text: `Here are ${trainingExamples.length} reference examples of this writer's handwriting with correct transcriptions. Study the letter shapes:`,
+      text: `Here are ${trainingExamples.length} reference examples of this writer's handwriting. Study how they form each letter:`,
     });
 
     for (let i = 0; i < trainingExamples.length; i++) {
@@ -295,47 +299,60 @@ async function ocrSingleLine(
       });
       content.push({
         type: "text",
-        text: `Reference ${i + 1} reads: ${ex.text}`,
+        text: `Reference ${i + 1}: ${ex.text}`,
       });
     }
-
-    content.push({
-      type: "text",
-      text: "Now read the NEW line below. It has DIFFERENT text — do not copy from the references above.",
-    });
   }
 
+  // The full page image
   content.push({
     type: "image",
-    source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: lineCropBase64 },
+    source: { type: "base64", media_type: mediaType as ImageMediaType, data: imageBase64 },
   });
 
-  let userText = "Transcribe this new line.";
-  if (fewShotHint) {
-    userText = `Output exactly: ${fewShotHint}`;
+  // Build instruction with any known lines as hints
+  let instruction = `Transcribe all ${lineCount} lines of handwritten Hebrew from the page image above. Output exactly ${lineCount} lines.`;
+  if (fewShotHints.size > 0) {
+    instruction += "\n\nSome lines are already known (use them exactly as given):";
+    const sorted = Array.from(fewShotHints.entries()).sort((a, b) => a[0] - b[0]);
+    for (const [idx, text] of sorted) {
+      instruction += `\nLine ${idx + 1}: ${text}`;
+    }
+    instruction += "\n\nTranscribe the remaining lines by reading the handwriting. Output ALL lines including the known ones.";
   }
-  content.push({ type: "text", text: userText });
+  content.push({ type: "text", text: instruction });
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
   const stream = client.messages.stream({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1024,
+    model: "claude-opus-4-20250514",
+    max_tokens: 4096,
     system: systemPrompt,
     messages,
   });
 
   const response = await stream.finalMessage();
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
-  let text = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
+  const rawText = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
 
-  // Strip entirely-English responses (model described instead of transcribing)
-  if (/[a-zA-Z]{3,}/.test(text) && !/[\u0590-\u05FF]/.test(text)) {
-    text = "[?]";
-  }
+  // Split into lines and filter out empty lines at the edges
+  let lines = rawText.split("\n").map(l => l.trim());
+
+  // Remove line number prefixes like "1. " or "1: " or "Line 1: " if the model added them
+  lines = lines.map(l => l.replace(/^(?:Line\s*)?\d+[\.:)\-]\s*/, ""));
+
+  // Strip entirely-English lines
+  lines = lines.map(l => {
+    if (/[a-zA-Z]{3,}/.test(l) && !/[\u0590-\u05FF]/.test(l)) return "[?]";
+    return l;
+  });
+
+  // Pad or trim to match expected line count
+  while (lines.length < lineCount) lines.push("[?]");
+  if (lines.length > lineCount) lines = lines.slice(0, lineCount);
 
   return {
-    text,
+    lines,
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
   };
@@ -353,8 +370,6 @@ export async function runOCR(
   firstLineHint?: string,
   fewShotLines?: FewShotLine[]
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
-  const sharp = (await import("sharp")).default;
-
   // Detect line positions
   const detectedLines = await detectLines(imageBuffer);
 
@@ -393,62 +408,21 @@ export async function runOCR(
     fewShotMap.set(0, firstLineHint);
   }
 
-  // OCR each line in batches
-  const BATCH_SIZE = 3;
-  const lineResults: { text: string; inputTokens: number; outputTokens: number }[] = new Array(detectedLines.length);
-  let totalInput = 0;
-  let totalOutput = 0;
+  // OCR the full page in one call (Opus, full context)
+  const ocrResult = await ocrFullPage(
+    imageBase64,
+    mediaType,
+    detectedLines.length,
+    trainingExamples,
+    fewShotMap,
+  );
 
-  for (let batchStart = 0; batchStart < detectedLines.length; batchStart += BATCH_SIZE) {
-    const batchEnd = Math.min(batchStart + BATCH_SIZE, detectedLines.length);
-    const batchPromises: Promise<void>[] = [];
-
-    for (let i = batchStart; i < batchEnd; i++) {
-      const line = detectedLines[i];
-      const padTop = Math.floor((line.yBottom - line.yTop) * 0.15);
-      const padBottom = Math.floor((line.yBottom - line.yTop) * 0.15);
-
-      const cropPromise = (async () => {
-        const metadata = await sharp(imageBuffer).metadata();
-        const imgHeight = metadata.height || 1;
-        const yTop = Math.max(0, line.yTop - padTop);
-        const yBottom = Math.min(imgHeight, line.yBottom + padBottom);
-        const cropHeight = yBottom - yTop;
-        if (cropHeight < 5) {
-          lineResults[i] = { text: "[?]", inputTokens: 0, outputTokens: 0 };
-          return;
-        }
-
-        const cropBuffer = await sharp(imageBuffer)
-          .extract({ left: 0, top: yTop, width: metadata.width || 1, height: cropHeight })
-          .jpeg({ quality: 90 })
-          .toBuffer();
-
-        const cropBase64 = cropBuffer.toString("base64");
-        const hint = fewShotMap.get(i);
-
-        const result = await ocrSingleLine(
-          cropBase64, i, detectedLines.length, trainingExamples, hint
-        );
-        lineResults[i] = result;
-      })();
-
-      batchPromises.push(cropPromise);
-    }
-
-    await Promise.all(batchPromises);
-  }
-
-  for (const lr of lineResults) {
-    if (lr) {
-      totalInput += lr.inputTokens;
-      totalOutput += lr.outputTokens;
-    }
-  }
+  const totalInput = ocrResult.inputTokens;
+  const totalOutput = ocrResult.outputTokens;
 
   // Track token usage
-  const modelId = "claude-sonnet-4-20250514";
-  const pricing = PRICING[modelId] || { input: 3, output: 15 };
+  const modelId = "claude-opus-4-20250514";
+  const pricing = PRICING[modelId] || { input: 15, output: 75 };
   const costCents =
     (totalInput * pricing.input + totalOutput * pricing.output) / 1_000_000 * 100;
 
@@ -463,11 +437,10 @@ export async function runOCR(
     },
   });
 
-  // Build results — words are just text splits, no pixel-based coordinate detection
+  // Build results — words are text splits from the OCR output
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
-    const text = lineResults[i]?.text || "[?]";
-    const firstLine = text.split("\n")[0].trim();
-    const wordTexts = firstLine.split(/\s+/);
+    const text = ocrResult.lines[i] || "[?]";
+    const wordTexts = text.split(/\s+/).filter(w => w.length > 0);
 
     const words: OCRWordResult[] = wordTexts.map((wt) => ({
       text: wt,
@@ -479,7 +452,7 @@ export async function runOCR(
       lineIndex: i,
       yTop: pos.yTop,
       yBottom: pos.yBottom,
-      text: firstLine,
+      text,
       words,
     };
   });

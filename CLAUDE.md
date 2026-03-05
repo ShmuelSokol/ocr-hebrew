@@ -7,7 +7,7 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 - **Framework**: Next.js 14 App Router + TypeScript
 - **Database**: Supabase PostgreSQL (via Prisma ORM v5)
 - **File Storage**: Supabase Storage (bucket: `uploads`)
-- **OCR Engine**: Claude Opus Vision API (claude-opus-4-20250514)
+- **OCR Engine**: Claude Opus 4 Vision API (claude-opus-4-20250514) — full-page single-call
 - **Auth**: NextAuth.js with credentials provider (email/password)
 - **Hosting**: Railway (Docker, standalone Next.js)
 - **Domain**: ksavyad.com (Cloudflare DNS)
