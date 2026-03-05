@@ -188,9 +188,32 @@ export default function EditorPage() {
     const res = await fetch(`/api/files/${fileId}/preprocess`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contrast: 1.3, brightness: 10, sharpen: true, grayscale: true }),
+      body: JSON.stringify({ contrast: 1.3, brightness: 10, sharpen: true, grayscale: true, deskew: true }),
     });
-    if (res.ok && imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
+    if (res.ok) {
+      const data = await res.json();
+      if (data.skewAngle && Math.abs(data.skewAngle) > 0.1) {
+        alert(`Straightened image by ${data.skewAngle.toFixed(1)}°`);
+      }
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
+    }
+  }
+
+  async function straightenImage() {
+    const res = await fetch(`/api/files/${fileId}/preprocess`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deskew: true }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Math.abs(data.skewAngle) < 0.1) {
+        alert("Image is already straight (no skew detected)");
+      } else {
+        alert(`Straightened by ${data.skewAngle.toFixed(1)}°`);
+      }
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
+    }
   }
 
   async function saveWord(wordId: string, corrected: string) {
@@ -594,7 +617,8 @@ export default function EditorPage() {
             </div>
           )}
           <div className="flex items-center gap-3">
-            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Enhance image">Enhance Image</button>
+            <button onClick={straightenImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Auto-detect and correct tilt/slant">Straighten</button>
+            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Straighten + enhance contrast/sharpness">Enhance Image</button>
             {!trainingMode && (
               <button onClick={runOCR} disabled={ocrRunning}
                 className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}>

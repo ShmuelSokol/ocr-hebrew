@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { supabase, BUCKET } from "@/lib/supabase";
 import sharp from "sharp";
+import { detectSkew } from "@/lib/ocr";
 
 export async function POST(
   req: NextRequest,
@@ -18,7 +19,7 @@ export async function POST(
   });
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { contrast, brightness, sharpen: doSharpen, grayscale, rotate } = await req.json();
+  const { contrast, brightness, sharpen: doSharpen, grayscale, rotate, deskew } = await req.json();
 
   // Download from Supabase
   const { data: blob, error } = await supabase.storage
@@ -30,9 +31,20 @@ export async function POST(
   }
 
   const imageData = Buffer.from(await blob.arrayBuffer());
+
+  // Auto-detect skew angle if deskew requested
+  let rotateAngle = rotate || 0;
+  let detectedAngle = 0;
+  if (deskew) {
+    detectedAngle = await detectSkew(imageData);
+    rotateAngle = -detectedAngle; // negate to correct
+  }
+
   let pipeline = sharp(imageData);
 
-  pipeline = pipeline.rotate(rotate || 0);
+  if (rotateAngle !== 0) {
+    pipeline = pipeline.rotate(rotateAngle, { background: "#ffffff" });
+  }
 
   if (grayscale) {
     pipeline = pipeline.greyscale();
@@ -65,5 +77,9 @@ export async function POST(
     data: { storagePath: newPath },
   });
 
-  return NextResponse.json({ success: true, size: processed.length });
+  return NextResponse.json({
+    success: true,
+    size: processed.length,
+    skewAngle: detectedAngle,
+  });
 }

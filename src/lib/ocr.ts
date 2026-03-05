@@ -55,6 +55,93 @@ export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; 
   return lines;
 }
 
+/**
+ * Detect skew angle of handwritten text by analyzing the tilt of text lines.
+ * Returns angle in degrees (positive = clockwise tilt, negative = counter-clockwise).
+ */
+export async function detectSkew(imageBuffer: Buffer): Promise<number> {
+  const sharp = (await import("sharp")).default;
+  const { data, info } = await sharp(imageBuffer)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height } = info;
+  const darkThreshold = 160;
+
+  // Detect line regions first
+  const rowDensity: number[] = [];
+  for (let y = 0; y < height; y++) {
+    let dark = 0;
+    for (let x = 0; x < width; x++) {
+      if (data[y * width + x] < darkThreshold) dark++;
+    }
+    rowDensity.push(dark / width);
+  }
+
+  const lineRegions: { yTop: number; yBottom: number }[] = [];
+  let inText = false;
+  let start = 0;
+  for (let y = 0; y < height; y++) {
+    if (rowDensity[y] > 0.015 && !inText) { start = y; inText = true; }
+    else if (rowDensity[y] <= 0.015 && inText) {
+      if (y - start > 15) lineRegions.push({ yTop: start, yBottom: y });
+      inText = false;
+    }
+  }
+  if (inText && height - start > 15) lineRegions.push({ yTop: start, yBottom: height });
+
+  if (lineRegions.length < 2) return 0;
+
+  // For each line, find center-of-mass of dark pixels in left 20% and right 20%
+  const angles: number[] = [];
+  const leftBound = Math.floor(width * 0.1);
+  const leftEnd = Math.floor(width * 0.3);
+  const rightStart = Math.floor(width * 0.7);
+  const rightEnd = Math.floor(width * 0.9);
+
+  for (const region of lineRegions) {
+    let leftWeightedY = 0, leftCount = 0;
+    let rightWeightedY = 0, rightCount = 0;
+
+    for (let y = region.yTop; y < region.yBottom; y++) {
+      for (let x = leftBound; x < leftEnd; x++) {
+        if (data[y * width + x] < darkThreshold) {
+          leftWeightedY += y;
+          leftCount++;
+        }
+      }
+      for (let x = rightStart; x < rightEnd; x++) {
+        if (data[y * width + x] < darkThreshold) {
+          rightWeightedY += y;
+          rightCount++;
+        }
+      }
+    }
+
+    if (leftCount < 10 || rightCount < 10) continue;
+
+    const leftCenterY = leftWeightedY / leftCount;
+    const rightCenterY = rightWeightedY / rightCount;
+    const leftCenterX = (leftBound + leftEnd) / 2;
+    const rightCenterX = (rightStart + rightEnd) / 2;
+
+    const angle = Math.atan2(rightCenterY - leftCenterY, rightCenterX - leftCenterX) * (180 / Math.PI);
+    angles.push(angle);
+  }
+
+  if (angles.length === 0) return 0;
+
+  // Use median angle for robustness
+  angles.sort((a, b) => a - b);
+  const median = angles[Math.floor(angles.length / 2)];
+
+  // Only correct small angles (< 5°), ignore large ones (likely not skew)
+  if (Math.abs(median) > 5) return 0;
+
+  return Math.round(median * 100) / 100;
+}
+
 // Pricing per million tokens (as of 2025)
 const PRICING: Record<string, { input: number; output: number }> = {
   "claude-opus-4-20250514": { input: 15, output: 75 },
