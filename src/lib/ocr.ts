@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 import { prisma } from "./prisma";
+import { supabase, BUCKET } from "./supabase";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -154,15 +155,22 @@ export interface FewShotLine {
   text: string;
 }
 
+interface TrainingImage {
+  base64: string;
+  text: string;
+}
+
 /**
- * OCR a single cropped line image.
- * Returns the transcribed text for that line.
+ * OCR a single cropped line image using real few-shot examples.
+ * Training examples are sent as image+text pairs in a multi-turn conversation
+ * so Claude can learn the writer's letter shapes before reading the new line.
  */
 async function ocrSingleLine(
   lineCropBase64: string,
   lineIndex: number,
   totalLines: number,
   correctionContext: string,
+  trainingExamples: TrainingImage[],
   fewShotHint?: string,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
@@ -175,7 +183,29 @@ async function ocrSingleLine(
     "- If you cannot read a letter, write [?]. Never guess.\n" +
     "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
 
-  let userText = `This is line ${lineIndex + 1} of ${totalLines} from a handwritten Hebrew page. Read exactly what is written.`;
+  // Build multi-turn conversation with few-shot examples
+  const messages: Anthropic.MessageParam[] = [];
+
+  // Add training examples as user/assistant turns
+  for (const ex of trainingExamples) {
+    messages.push({
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
+        },
+        { type: "text", text: "Read this handwritten Hebrew line." },
+      ],
+    });
+    messages.push({
+      role: "assistant",
+      content: [{ type: "text", text: ex.text }],
+    });
+  }
+
+  // Now add the actual line to OCR
+  let userText = "Read this handwritten Hebrew line.";
   if (fewShotHint) {
     userText += `\n\nThe correct transcription for this line is known to be: ${fewShotHint}\nOutput this exact text.`;
   }
@@ -183,26 +213,22 @@ async function ocrSingleLine(
     userText += correctionContext;
   }
 
+  messages.push({
+    role: "user",
+    content: [
+      {
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: lineCropBase64 },
+      },
+      { type: "text", text: userText },
+    ],
+  });
+
   const stream = client.messages.stream({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1024,
     system: systemPrompt,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/jpeg" as ImageMediaType,
-              data: lineCropBase64,
-            },
-          },
-          { type: "text", text: userText },
-        ],
-      },
-    ],
+    messages,
   });
 
   const response = await stream.finalMessage();
@@ -231,9 +257,32 @@ export async function runOCR(
   // Detect line positions in the image
   const detectedLines = await detectLines(imageBuffer);
 
-  // Get correction examples for this profile
+  // Load real training examples (image crops + correct text) for this profile
+  const trainingExamples: TrainingImage[] = [];
   let correctionContext = "";
   if (profileId) {
+    // Load image-based training examples (max 5 to keep prompt size reasonable)
+    const examples = await prisma.trainingExample.findMany({
+      where: { profileId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    });
+
+    for (const ex of examples) {
+      try {
+        const { data: blob, error } = await supabase.storage
+          .from(BUCKET)
+          .download(ex.storagePath);
+        if (!error && blob) {
+          const buf = Buffer.from(await blob.arrayBuffer());
+          trainingExamples.push({ base64: buf.toString("base64"), text: ex.text });
+        }
+      } catch {
+        // Skip failed downloads
+      }
+    }
+
+    // Also load text-based corrections as supplementary context
     const corrections = await prisma.correction.findMany({
       where: { profileId },
     });
@@ -263,14 +312,13 @@ export async function runOCR(
     }
   }
 
-  // Build few-shot lookup from verified lines
+  // Build few-shot lookup from verified lines (text-only, for lines user typed in training mode)
   const fewShotMap = new Map<number, string>();
   if (fewShotLines) {
     for (const l of fewShotLines) {
       if (l.text.trim()) fewShotMap.set(l.lineIndex, l.text.trim());
     }
   }
-  // Legacy first-line hint
   if (firstLineHint && !fewShotMap.has(0)) {
     fewShotMap.set(0, firstLineHint);
   }
@@ -312,7 +360,7 @@ export async function runOCR(
         const hint = fewShotMap.get(i);
 
         const result = await ocrSingleLine(
-          cropBase64, i, detectedLines.length, correctionContext, hint
+          cropBase64, i, detectedLines.length, correctionContext, trainingExamples, hint
         );
         lineResults[i] = result;
       })();

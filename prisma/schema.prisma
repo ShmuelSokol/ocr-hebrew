@@ -26,10 +26,11 @@ model HandwritingProfile {
   description String?
   userId      String
   user        User     @relation(fields: [userId], references: [id])
-  files       File[]
-  corrections Correction[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  files            File[]
+  corrections      Correction[]
+  trainingExamples TrainingExample[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 model File {
@@ -99,5 +100,14 @@ model Correction {
   originalText String
   correctedText String
   imageSnippet String?
+  createdAt   DateTime @default(now())
+}
+
+model TrainingExample {
+  id          String   @id @default(cuid())
+  profileId   String
+  profile     HandwritingProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  storagePath String
+  text        String
   createdAt   DateTime @default(now())
 }

@@ -54,6 +54,10 @@ export default function EditorPage() {
     uniqueWords: number;
     words: { originalText: string; corrections: { correctedText: string; count: number; ids: string[] }[] }[];
   } | null>(null);
+  const [showTrainingExamples, setShowTrainingExamples] = useState(false);
+  const [trainingExamples, setTrainingExamples] = useState<{
+    id: string; storagePath: string; text: string; createdAt: string;
+  }[]>([]);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
   const [imageDisplayWidth, setImageDisplayWidth] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -154,14 +158,22 @@ export default function EditorPage() {
 
   async function confirmLine(lineId: string) {
     await fetch(`/api/lines/${lineId}/confirm`, { method: "POST" });
+    // Auto-save as training example if profile exists
+    if (profileId) {
+      await fetch(`/api/lines/${lineId}/save-training`, { method: "POST" }).catch(() => {});
+    }
     await loadResult();
   }
 
   async function confirmAllLines() {
     if (!result) return;
     for (const line of result.lines) {
-      if (line.words.some((w) => !w.correctedText))
+      if (line.words.some((w) => !w.correctedText)) {
         await fetch(`/api/lines/${line.id}/confirm`, { method: "POST" });
+        if (profileId) {
+          await fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
+        }
+      }
     }
     await loadResult();
   }
@@ -212,6 +224,38 @@ export default function EditorPage() {
         alert(`Straightened image by ${data.skewAngle.toFixed(1)}°`);
       }
     }
+  }
+
+  async function loadTrainingExamples() {
+    if (!profileId) return;
+    const res = await fetch(`/api/profiles/${profileId}/training`);
+    if (res.ok) {
+      const data = await res.json();
+      setTrainingExamples(data.examples);
+      setShowTrainingExamples(true);
+    }
+  }
+
+  async function deleteTrainingExample(exampleId: string) {
+    if (!profileId) return;
+    await fetch(`/api/profiles/${profileId}/training`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exampleId }),
+    });
+    const res = await fetch(`/api/profiles/${profileId}/training`);
+    if (res.ok) setTrainingExamples((await res.json()).examples);
+  }
+
+  async function clearAllTrainingExamples() {
+    if (!profileId) return;
+    if (!confirm(`Delete all ${trainingExamples.length} training examples? This cannot be undone.`)) return;
+    await fetch(`/api/profiles/${profileId}/training`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    setTrainingExamples([]);
   }
 
   async function loadProfileCorrections() {
@@ -662,14 +706,66 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Profile info + corrections */}
+      {/* Profile info + corrections + training */}
       {profileName && (
-        <div className="mb-4 flex items-center gap-3 text-sm">
+        <div className="mb-4 flex items-center gap-3 text-sm flex-wrap">
           <span className="text-gray-500">Profile: <strong>{profileName}</strong></span>
-          <button onClick={loadProfileCorrections}
-            className={`px-2 py-1 rounded text-xs font-medium ${showProfileCorrections ? "bg-blue-500 text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-700"}`}>
-            {showProfileCorrections ? "Hide Corrections" : "View Learned Words"}
+          <button onClick={() => { if (showTrainingExamples) setShowTrainingExamples(false); else loadTrainingExamples(); }}
+            className={`px-2 py-1 rounded text-xs font-medium ${showTrainingExamples ? "bg-purple-500 text-white" : "bg-purple-100 hover:bg-purple-200 text-purple-700"}`}>
+            {showTrainingExamples ? "Hide Training" : `Training Examples (${trainingExamples.length || "?"})`}
           </button>
+          <button onClick={() => { if (showProfileCorrections) setShowProfileCorrections(false); else loadProfileCorrections(); }}
+            className={`px-2 py-1 rounded text-xs font-medium ${showProfileCorrections ? "bg-blue-500 text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-700"}`}>
+            {showProfileCorrections ? "Hide Word Corrections" : "Word Corrections"}
+          </button>
+        </div>
+      )}
+
+      {/* Training examples panel */}
+      {showTrainingExamples && (
+        <div className="bg-white rounded-lg shadow p-4 mb-4 border border-purple-200">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="font-medium text-sm">
+              Training Examples
+              <span className="text-gray-400 font-normal ml-2">
+                ({trainingExamples.length} saved — up to 5 used per OCR call)
+              </span>
+            </h3>
+            <div className="flex gap-2">
+              {trainingExamples.length > 0 && (
+                <button onClick={clearAllTrainingExamples}
+                  className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">
+                  Clear All
+                </button>
+              )}
+              <button onClick={() => setShowTrainingExamples(false)}
+                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Close</button>
+            </div>
+          </div>
+          {trainingExamples.length === 0 ? (
+            <div className="text-center py-4 text-gray-400 text-sm">
+              <p>No training examples yet.</p>
+              <p className="mt-1">Confirm lines in the editor to automatically save them as training data.</p>
+              <p className="mt-1">The handwriting image + correct text will be shown to the AI when reading new lines.</p>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-64 overflow-auto">
+              {trainingExamples.map((ex) => (
+                <div key={ex.id} className="flex items-center gap-3 bg-gray-50 rounded p-2 border">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`/api/profiles/${profileId}/training/image/${ex.id}`}
+                    alt="Training line"
+                    className="h-10 max-w-[200px] object-contain rounded border bg-white"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  />
+                  <span className="flex-1 text-sm font-medium" dir="rtl">{ex.text}</span>
+                  <button onClick={() => deleteTrainingExample(ex.id)}
+                    className="text-red-400 hover:text-red-600 text-xs px-1 shrink-0" title="Delete">&#10005;</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
