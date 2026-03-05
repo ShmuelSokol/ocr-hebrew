@@ -279,114 +279,161 @@ export default function EditorPage() {
     );
   }
 
-  // Render OCR text overlayed directly on the image
+  // Render line-by-line: handwritten image strip, then OCR text below it
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
 
-    return (
-      <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={`/api/files/${fileId}/image`}
-          alt="Original"
-          className="w-full block"
-        />
-        {showOverlay &&
-          result.lines.map((line) => {
-            const allConfirmed = line.words.every((w) => w.correctedText);
-            return (
-              <div
-                key={`text-${line.id}`}
-                className={`absolute left-0 right-0 px-2 py-1 flex items-center gap-1 ${
-                  allConfirmed
-                    ? "bg-green-50/80 border-y border-green-300"
-                    : "bg-yellow-50/80 border-y border-yellow-300"
-                }`}
-                dir="rtl"
-                style={{
-                  top: `${(line.yTop / imageNaturalHeight) * 100}%`,
-                  minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
-                }}
-              >
-                <div className="flex flex-wrap gap-1 text-sm leading-snug flex-1">
-                  {line.words.map((word) => {
-                    const isCorrected =
-                      word.correctedText && word.correctedText !== word.rawText;
-                    const isEditing = editingWord === word.id;
-                    const displayText = word.correctedText || word.rawText;
+    const scale = imageDisplayWidth
+      ? imageDisplayWidth / (imageRef.current?.naturalWidth || imageDisplayWidth)
+      : 1;
 
-                    if (isEditing) {
+    return (
+      <div style={{ width: imageDisplayWidth || "100%" }}>
+        {result.lines.map((line, i) => {
+          const allConfirmed = line.words.every((w) => w.correctedText);
+          const lineHeight = (line.yBottom - line.yTop) * scale;
+          // Add gap image before first line, or between lines
+          const prevBottom = i > 0 ? result.lines[i - 1].yBottom : 0;
+          const gapHeight = (line.yTop - prevBottom) * scale;
+
+          return (
+            <div key={line.id}>
+              {/* Gap before this line */}
+              {gapHeight > 2 && !showOverlay && (
+                <div
+                  style={{
+                    width: "100%",
+                    height: gapHeight,
+                    backgroundImage: `url(/api/files/${fileId}/image)`,
+                    backgroundPosition: `0 ${-prevBottom * scale}px`,
+                    backgroundSize: `${imageDisplayWidth}px auto`,
+                    backgroundRepeat: "no-repeat",
+                  }}
+                />
+              )}
+
+              {/* Handwritten image strip for this line */}
+              <div
+                style={{
+                  width: "100%",
+                  height: Math.max(lineHeight, 30),
+                  backgroundImage: `url(/api/files/${fileId}/image)`,
+                  backgroundPosition: `0 ${-line.yTop * scale}px`,
+                  backgroundSize: `${imageDisplayWidth}px auto`,
+                  backgroundRepeat: "no-repeat",
+                }}
+              />
+
+              {/* OCR text strip below the image strip */}
+              {showOverlay && (
+                <div
+                  className={`px-3 py-2 flex items-start gap-2 border-b-2 ${
+                    allConfirmed
+                      ? "bg-green-50 border-green-300"
+                      : "bg-gray-50 border-gray-200"
+                  }`}
+                  dir="rtl"
+                >
+                  <div className="flex flex-wrap gap-1 text-base leading-relaxed flex-1">
+                    {line.words.map((word) => {
+                      const isCorrected =
+                        word.correctedText && word.correctedText !== word.rawText;
+                      const isEditing = editingWord === word.id;
+                      const displayText = word.correctedText || word.rawText;
+
+                      if (isEditing) {
+                        return (
+                          <span key={word.id} className="inline-flex items-center gap-1">
+                            <input
+                              type="text"
+                              dir="rtl"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveWord(word.id, editValue);
+                                if (e.key === "Escape") setEditingWord(null);
+                              }}
+                              className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => saveWord(word.id, editValue)}
+                              className="text-green-600 text-sm font-bold"
+                            >
+                              &#10003;
+                            </button>
+                            <button
+                              onClick={() => setEditingWord(null)}
+                              className="text-red-500 text-sm font-bold"
+                            >
+                              &#10005;
+                            </button>
+                          </span>
+                        );
+                      }
+
                       return (
-                        <span key={word.id} className="inline-flex items-center gap-1">
-                          <input
-                            type="text"
-                            dir="rtl"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") saveWord(word.id, editValue);
-                              if (e.key === "Escape") setEditingWord(null);
-                            }}
-                            className="border-2 border-blue-500 rounded px-1 py-0.5 text-sm w-24 text-right bg-white"
-                            autoFocus
-                          />
-                          <button
-                            onClick={() => saveWord(word.id, editValue)}
-                            className="text-green-600 text-xs font-bold"
-                          >
-                            &#10003;
-                          </button>
-                          <button
-                            onClick={() => setEditingWord(null)}
-                            className="text-red-500 text-xs font-bold"
-                          >
-                            &#10005;
-                          </button>
+                        <span
+                          key={word.id}
+                          onClick={() => startEdit(word)}
+                          className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
+                            isCorrected
+                              ? "bg-green-100 border border-green-300 font-medium"
+                              : "hover:underline"
+                          } ${
+                            word.rawText === "[?]"
+                              ? "bg-red-100 text-red-500 border border-red-300"
+                              : ""
+                          }`}
+                          title={
+                            isCorrected
+                              ? `Original: ${word.rawText}`
+                              : "Click to correct"
+                          }
+                        >
+                          {displayText}
                         </span>
                       );
-                    }
-
-                    return (
-                      <span
-                        key={word.id}
-                        onClick={() => startEdit(word)}
-                        className={`cursor-pointer px-1 rounded transition-all hover:bg-blue-200 hover:shadow text-gray-900 ${
-                          isCorrected
-                            ? "bg-green-200/90 border border-green-400 font-medium"
-                            : ""
-                        } ${
-                          word.rawText === "[?]"
-                            ? "bg-red-200/90 text-red-600 border border-red-400"
-                            : ""
-                        }`}
-                        title={
-                          isCorrected
-                            ? `Original: ${word.rawText}`
-                            : "Click to correct"
-                        }
-                      >
-                        {displayText}
-                      </span>
-                    );
-                  })}
+                    })}
+                  </div>
+                  {!allConfirmed && (
+                    <button
+                      onClick={() => confirmLine(line.id)}
+                      className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5"
+                      title="Confirm this line is correct"
+                    >
+                      Confirm
+                    </button>
+                  )}
+                  {allConfirmed && (
+                    <span className="text-xs text-green-600 whitespace-nowrap mt-1">
+                      &#10003;
+                    </span>
+                  )}
                 </div>
-                {!allConfirmed && (
-                  <button
-                    onClick={() => confirmLine(line.id)}
-                    className="text-xs bg-green-500 text-white px-2 py-0.5 rounded hover:bg-green-600 whitespace-nowrap"
-                    title="Confirm this line is correct"
-                  >
-                    &#10003;
-                  </button>
-                )}
-                {allConfirmed && (
-                  <span className="text-xs text-green-600 whitespace-nowrap">
-                    &#10003;
-                  </span>
-                )}
-              </div>
-            );
-          })}
+              )}
+            </div>
+          );
+        })}
+        {/* Remaining image after last line */}
+        {(() => {
+          const lastLine = result.lines[result.lines.length - 1];
+          const remainingHeight =
+            (imageNaturalHeight - lastLine.yBottom) * scale;
+          if (remainingHeight <= 2) return null;
+          return (
+            <div
+              style={{
+                width: "100%",
+                height: remainingHeight,
+                backgroundImage: `url(/api/files/${fileId}/image)`,
+                backgroundPosition: `0 ${-lastLine.yBottom * scale}px`,
+                backgroundSize: `${imageDisplayWidth}px auto`,
+                backgroundRepeat: "no-repeat",
+              }}
+            />
+          );
+        })()}
       </div>
     );
   }
