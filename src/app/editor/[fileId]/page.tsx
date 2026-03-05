@@ -33,6 +33,67 @@ interface DetectedLine {
   yBottom: number;
 }
 
+// Canvas-based word crop component — draws directly from the loaded image
+function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
+  imgEl: HTMLImageElement | null;
+  word: Word;
+  line: Line;
+  maxHeight?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
+    if (word.xLeft == null || word.xRight == null) return;
+
+    const srcW = word.xRight - word.xLeft;
+    const srcH = line.yBottom - line.yTop;
+    if (srcW <= 0 || srcH <= 0) return;
+
+    const scale = Math.min(2, maxHeight / srcH);
+    canvas.width = Math.max(20, Math.round(srcW * scale));
+    canvas.height = Math.max(15, Math.round(srcH * scale));
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(imgEl, word.xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
+  }, [imgEl, word.xLeft, word.xRight, line.yTop, line.yBottom, maxHeight]);
+
+  if (word.xLeft == null || word.xRight == null) {
+    return <div className="h-8 w-16 bg-gray-100 flex items-center justify-center text-[9px] text-gray-400">no crop</div>;
+  }
+
+  return <canvas ref={canvasRef} className="block" />;
+}
+
+// Canvas-based line crop for review mode
+function LineCropCanvas({ imgEl, line, maxHeight = 80 }: {
+  imgEl: HTMLImageElement | null;
+  line: Line;
+  maxHeight?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
+
+    const srcH = line.yBottom - line.yTop;
+    if (srcH <= 0) return;
+
+    const scale = Math.min(1, maxHeight / srcH);
+    canvas.width = Math.round(imgEl.naturalWidth * scale);
+    canvas.height = Math.max(20, Math.round(srcH * scale));
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(imgEl, 0, line.yTop, imgEl.naturalWidth, srcH, 0, 0, canvas.width, canvas.height);
+  }, [imgEl, line.yTop, line.yBottom, maxHeight]);
+
+  return <canvas ref={canvasRef} className="w-full block" />;
+}
+
 const RERUN_THRESHOLD = 5;
 
 export default function EditorPage() {
@@ -61,33 +122,30 @@ export default function EditorPage() {
     id: string; storagePath: string; text: string; createdAt: string;
   }[]>([]);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
-  const [imageDisplayWidth, setImageDisplayWidth] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [showOverlay, setShowOverlay] = useState(true);
   const [correctionCount, setCorrectionCount] = useState(0);
   const [showRerunBanner, setShowRerunBanner] = useState(false);
-  // Training mode
   const [trainingMode, setTrainingMode] = useState(false);
   const [detectedLines, setDetectedLines] = useState<DetectedLine[]>([]);
   const [trainingTexts, setTrainingTexts] = useState<Record<number, string>>({});
   const [detectingLines, setDetectingLines] = useState(false);
-  // Word-by-word review
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewLineIdx, setReviewLineIdx] = useState(0);
   const [reviewWordIdx, setReviewWordIdx] = useState(0);
   const [reviewEditValue, setReviewEditValue] = useState("");
   const [reviewEditing, setReviewEditing] = useState(false);
-  // Add word
   const [addingWordLineId, setAddingWordLineId] = useState<string | null>(null);
   const [addingWordAfterIdx, setAddingWordAfterIdx] = useState<number>(-1);
   const [addWordValue, setAddWordValue] = useState("");
   const [imageCacheBust, setImageCacheBust] = useState(() => Date.now());
-  const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
+  // This counter triggers canvas re-draws when the image changes
+  const [imageVersion, setImageVersion] = useState(0);
 
   const imageRef = useRef<HTMLImageElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const reviewInputRef = useRef<HTMLInputElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Data Loading ──────────────────────────────────────
 
   const loadResult = useCallback(async () => {
     setLoading(true);
@@ -108,10 +166,7 @@ export default function EditorPage() {
       setResult(resultData);
       const corrected = resultData.lines.reduce(
         (sum: number, line: Line) =>
-          sum +
-          line.words.filter(
-            (w: Word) => w.correctedText && w.correctedText !== w.rawText
-          ).length,
+          sum + line.words.filter((w: Word) => w.correctedText && w.correctedText !== w.rawText).length,
         0
       );
       setCorrectionCount(corrected);
@@ -138,18 +193,18 @@ export default function EditorPage() {
     if (correctionCount >= RERUN_THRESHOLD && result) setShowRerunBanner(true);
   }, [correctionCount, result]);
 
-  // Focus review input when entering edit mode
   useEffect(() => {
-    if (reviewEditing && reviewInputRef.current) reviewInputRef.current.focus();
+    if (reviewEditing && editInputRef.current) editInputRef.current.focus();
   }, [reviewEditing]);
 
   function onImageLoad() {
     if (imageRef.current) {
       setImageNaturalHeight(imageRef.current.naturalHeight);
-      setImageNaturalWidth(imageRef.current.naturalWidth);
-      setImageDisplayWidth(imageRef.current.clientWidth);
+      setImageVersion((v) => v + 1);
     }
   }
+
+  // ─── Actions ───────────────────────────────────────────
 
   async function startTrainingMode() {
     setDetectingLines(true);
@@ -160,10 +215,7 @@ export default function EditorPage() {
 
   async function confirmLine(lineId: string) {
     await fetch(`/api/lines/${lineId}/confirm`, { method: "POST" });
-    // Fire-and-forget: save training example in background
-    if (profileId) {
-      fetch(`/api/lines/${lineId}/save-training`, { method: "POST" }).catch(() => {});
-    }
+    if (profileId) fetch(`/api/lines/${lineId}/save-training`, { method: "POST" }).catch(() => {});
     await loadResult();
   }
 
@@ -175,13 +227,9 @@ export default function EditorPage() {
   async function confirmAllLines() {
     if (!result) return;
     const toConfirm = result.lines.filter((line) => line.words.some((w) => !w.correctedText));
-    // Confirm all in parallel
     await Promise.all(toConfirm.map((line) => fetch(`/api/lines/${line.id}/confirm`, { method: "POST" })));
-    // Fire-and-forget: save training examples in background
     if (profileId) {
-      for (const line of toConfirm) {
-        fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
-      }
+      for (const line of toConfirm) fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
     }
     await loadResult();
   }
@@ -228,85 +276,7 @@ export default function EditorPage() {
       const bust = Date.now();
       setImageCacheBust(bust);
       if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
-      if (data.skewAngle && Math.abs(data.skewAngle) > 0.1) {
-        alert(`Straightened image by ${data.skewAngle.toFixed(1)}°`);
-      }
-    }
-  }
-
-  async function loadTrainingExamples() {
-    if (!profileId) return;
-    const res = await fetch(`/api/profiles/${profileId}/training`);
-    if (res.ok) {
-      const data = await res.json();
-      setTrainingExamples(data.examples);
-      setShowTrainingExamples(true);
-    }
-  }
-
-  async function deleteTrainingExample(exampleId: string) {
-    if (!profileId) return;
-    await fetch(`/api/profiles/${profileId}/training`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ exampleId }),
-    });
-    const res = await fetch(`/api/profiles/${profileId}/training`);
-    if (res.ok) setTrainingExamples((await res.json()).examples);
-  }
-
-  async function clearAllTrainingExamples() {
-    if (!profileId) return;
-    if (!confirm(`Delete all ${trainingExamples.length} training examples? This cannot be undone.`)) return;
-    await fetch(`/api/profiles/${profileId}/training`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    setTrainingExamples([]);
-  }
-
-  async function loadProfileCorrections() {
-    if (!profileId) return;
-    const res = await fetch(`/api/profiles/${profileId}/corrections`);
-    if (res.ok) {
-      const data = await res.json();
-      setProfileCorrections(data);
-      setShowProfileCorrections(true);
-    }
-  }
-
-  async function deleteCorrection(ids: string[]) {
-    for (const id of ids) {
-      await fetch(`/api/corrections/${id}`, { method: "DELETE" });
-    }
-    if (profileId) {
-      const res = await fetch(`/api/profiles/${profileId}/corrections`);
-      if (res.ok) setProfileCorrections(await res.json());
-    }
-  }
-
-  async function clearAllCorrections() {
-    if (!profileCorrections || !profileId) return;
-    if (!confirm(`Delete all ${profileCorrections.totalCorrections} learned corrections for this profile? This cannot be undone.`)) return;
-    const allIds = profileCorrections.words.flatMap((w) => w.corrections.flatMap((c) => c.ids));
-    for (const id of allIds) {
-      await fetch(`/api/corrections/${id}`, { method: "DELETE" });
-    }
-    const res = await fetch(`/api/profiles/${profileId}/corrections`);
-    if (res.ok) setProfileCorrections(await res.json());
-  }
-
-  async function manualRotate(degrees: number) {
-    const res = await fetch(`/api/files/${fileId}/preprocess`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rotate: degrees }),
-    });
-    if (res.ok) {
-      const bust = Date.now();
-      setImageCacheBust(bust);
-      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
+      if (data.skewAngle && Math.abs(data.skewAngle) > 0.1) alert(`Straightened image by ${data.skewAngle.toFixed(1)}deg`);
     }
   }
 
@@ -321,14 +291,24 @@ export default function EditorPage() {
       const bust = Date.now();
       setImageCacheBust(bust);
       if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
-      if (Math.abs(data.skewAngle) < 0.1) {
-        alert("Image appears straight (no significant skew detected). Try 'Enhance Image' for full processing.");
-      } else {
-        alert(`Straightened by ${data.skewAngle.toFixed(1)}°`);
-      }
+      if (Math.abs(data.skewAngle) < 0.1) alert("Image appears straight. Try 'Enhance Image' for full processing.");
+      else alert(`Straightened by ${data.skewAngle.toFixed(1)}deg`);
     } else {
       const err = await res.json().catch(() => ({}));
       alert("Straighten failed: " + (err.error || "Unknown error"));
+    }
+  }
+
+  async function manualRotate(degrees: number) {
+    const res = await fetch(`/api/files/${fileId}/preprocess`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rotate: degrees }),
+    });
+    if (res.ok) {
+      const bust = Date.now();
+      setImageCacheBust(bust);
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
     }
   }
 
@@ -363,15 +343,58 @@ export default function EditorPage() {
   function startEdit(word: Word) {
     setEditingWord(word.id);
     setEditValue(word.correctedText || word.rawText);
+    setTimeout(() => editInputRef.current?.focus(), 50);
   }
 
-  // === Review mode helpers ===
-  function startReview() {
-    setReviewLineIdx(0);
-    setReviewWordIdx(0);
-    setReviewEditing(false);
-    setReviewMode(true);
+  // ─── Training / Corrections Panels ─────────────────────
+
+  async function loadTrainingExamples() {
+    if (!profileId) return;
+    const res = await fetch(`/api/profiles/${profileId}/training`);
+    if (res.ok) { setTrainingExamples((await res.json()).examples); setShowTrainingExamples(true); }
   }
+
+  async function deleteTrainingExample(exampleId: string) {
+    if (!profileId) return;
+    await fetch(`/api/profiles/${profileId}/training`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exampleId }),
+    });
+    const res = await fetch(`/api/profiles/${profileId}/training`);
+    if (res.ok) setTrainingExamples((await res.json()).examples);
+  }
+
+  async function clearAllTrainingExamples() {
+    if (!profileId || !confirm(`Delete all ${trainingExamples.length} training examples?`)) return;
+    await fetch(`/api/profiles/${profileId}/training`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+    });
+    setTrainingExamples([]);
+  }
+
+  async function loadProfileCorrections() {
+    if (!profileId) return;
+    const res = await fetch(`/api/profiles/${profileId}/corrections`);
+    if (res.ok) { setProfileCorrections(await res.json()); setShowProfileCorrections(true); }
+  }
+
+  async function deleteCorrection(ids: string[]) {
+    for (const id of ids) await fetch(`/api/corrections/${id}`, { method: "DELETE" });
+    if (profileId) {
+      const res = await fetch(`/api/profiles/${profileId}/corrections`);
+      if (res.ok) setProfileCorrections(await res.json());
+    }
+  }
+
+  async function clearAllCorrections() {
+    if (!profileCorrections || !profileId) return;
+    if (!confirm(`Delete all ${profileCorrections.totalCorrections} learned corrections?`)) return;
+    const allIds = profileCorrections.words.flatMap((w) => w.corrections.flatMap((c) => c.ids));
+    for (const id of allIds) await fetch(`/api/corrections/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/profiles/${profileId}/corrections`);
+    if (res.ok) setProfileCorrections(await res.json());
+  }
+
+  // ─── Review Mode ──────────────────────────────────────
 
   const reviewLine = result?.lines[reviewLineIdx];
   const reviewWord = reviewLine?.words[reviewWordIdx];
@@ -380,24 +403,21 @@ export default function EditorPage() {
     ? result.lines.slice(0, reviewLineIdx).reduce((s, l) => s + l.words.length, 0) + reviewWordIdx + 1
     : 0;
 
+  function startReview() { setReviewLineIdx(0); setReviewWordIdx(0); setReviewEditing(false); setReviewMode(true); }
+
   function reviewNext() {
     if (!result) return;
     setReviewEditing(false);
     const line = result.lines[reviewLineIdx];
-    if (reviewWordIdx < line.words.length - 1) {
-      setReviewWordIdx(reviewWordIdx + 1);
-    } else if (reviewLineIdx < result.lines.length - 1) {
-      setReviewLineIdx(reviewLineIdx + 1);
-      setReviewWordIdx(0);
-    }
+    if (reviewWordIdx < line.words.length - 1) setReviewWordIdx(reviewWordIdx + 1);
+    else if (reviewLineIdx < result.lines.length - 1) { setReviewLineIdx(reviewLineIdx + 1); setReviewWordIdx(0); }
   }
 
   function reviewPrev() {
     if (!result) return;
     setReviewEditing(false);
-    if (reviewWordIdx > 0) {
-      setReviewWordIdx(reviewWordIdx - 1);
-    } else if (reviewLineIdx > 0) {
+    if (reviewWordIdx > 0) setReviewWordIdx(reviewWordIdx - 1);
+    else if (reviewLineIdx > 0) {
       const prevLine = result.lines[reviewLineIdx - 1];
       setReviewLineIdx(reviewLineIdx - 1);
       setReviewWordIdx(prevLine.words.length - 1);
@@ -406,8 +426,7 @@ export default function EditorPage() {
 
   async function reviewConfirm() {
     if (!reviewWord) return;
-    const text = reviewWord.correctedText || reviewWord.rawText;
-    await saveWord(reviewWord.id, text);
+    await saveWord(reviewWord.id, reviewWord.correctedText || reviewWord.rawText);
     reviewNext();
   }
 
@@ -422,16 +441,12 @@ export default function EditorPage() {
     if (!reviewWord) return;
     await fetch(`/api/words/${reviewWord.id}`, { method: "DELETE" });
     await loadResult();
-    // Adjust index if needed
     if (result) {
       const line = result.lines[reviewLineIdx];
-      if (line && reviewWordIdx >= line.words.length - 1 && reviewWordIdx > 0) {
-        setReviewWordIdx(reviewWordIdx - 1);
-      }
+      if (line && reviewWordIdx >= line.words.length - 1 && reviewWordIdx > 0) setReviewWordIdx(reviewWordIdx - 1);
     }
   }
 
-  // Keyboard nav for review mode
   useEffect(() => {
     if (!reviewMode || reviewEditing) return;
     function handleKey(e: KeyboardEvent) {
@@ -449,36 +464,10 @@ export default function EditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewMode, reviewEditing, reviewLineIdx, reviewWordIdx, result]);
 
-  const trainingLineCount = Object.values(trainingTexts).filter((t) => t.trim()).length;
+  // ─── Render: Add Word Button ──────────────────────────
 
-  const scale = imageDisplayWidth && imageRef.current
-    ? imageDisplayWidth / imageRef.current.naturalWidth
-    : 1;
-
-  // === Render training mode ===
-  function renderTraining() {
-    if (!detectedLines.length || !imageNaturalHeight) return null;
-    return (
-      <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
-        {detectedLines.map((line, i) => (
-          <div key={`train-${i}`} className="absolute left-0 right-0 flex items-center gap-1 px-2" dir="rtl"
-            style={{ top: `${(line.yTop / imageNaturalHeight) * 100}%`, minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%` }}>
-            <span className="text-xs bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center shrink-0">{i + 1}</span>
-            <input type="text" dir="rtl" placeholder={i < 3 ? "Type this line..." : ""} value={trainingTexts[i] || ""}
-              onChange={(e) => setTrainingTexts((prev) => ({ ...prev, [i]: e.target.value }))}
-              className={`flex-1 border rounded px-2 py-1 text-sm text-right ${trainingTexts[i]?.trim() ? "bg-green-50/90 border-green-400" : "bg-white/80 border-gray-300"}`} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  // === Render word add button ===
   function renderAddBtn(lineId: string, afterIdx: number) {
-    const isAdding = addingWordLineId === lineId && addingWordAfterIdx === afterIdx;
-    if (isAdding) {
+    if (addingWordLineId === lineId && addingWordAfterIdx === afterIdx) {
       return (
         <span className="inline-flex items-center gap-1">
           <input type="text" dir="rtl" value={addWordValue} onChange={(e) => setAddWordValue(e.target.value)}
@@ -495,22 +484,27 @@ export default function EditorPage() {
     );
   }
 
-  // === Render word-card view: handwriting crop + text below each word ===
-  function renderOverlay() {
+  // ─── Render: Word Cards ───────────────────────────────
+
+  function renderWordCards() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
-    const hasCoords = result.lines.some((l) => l.words.some((w) => w.xLeft != null));
+    const imgEl = imageRef.current;
 
     return (
       <div>
         {result.lines.map((line) => {
           const allConfirmed = line.words.every((w) => w.correctedText);
-          const lineHeight = line.yBottom - line.yTop;
 
           return (
             <div key={line.id} className="border-b border-gray-200">
-              {/* Word cards row — RTL */}
+              {/* Line image crop */}
+              <div className="px-2 pt-2">
+                <LineCropCanvas imgEl={imgEl} line={line} key={`lc-${line.id}-${imageVersion}`} />
+              </div>
+
+              {/* Word text row — RTL */}
               <div className="flex flex-row-reverse flex-wrap items-start gap-1 px-2 py-2" dir="rtl">
-                {/* Line number */}
+                {/* Line number + confirm */}
                 <div className="flex flex-col items-center justify-center shrink-0 w-6 pt-1">
                   <span className="text-[10px] text-gray-400">{line.lineIndex + 1}</span>
                   {!allConfirmed ? (
@@ -522,15 +516,12 @@ export default function EditorPage() {
                   )}
                 </div>
 
-                {/* Add word at start */}
                 {renderAddBtn(line.id, -1)}
 
-                {/* Word cards */}
                 {line.words.map((word) => {
                   const isCorrected = word.correctedText && word.correctedText !== word.rawText;
                   const isSelected = editingWord === word.id;
                   const displayText = word.correctedText || word.rawText;
-                  const wordHasCoords = hasCoords && word.xLeft != null && word.xRight != null;
 
                   return (
                     <div key={word.id} className="inline-flex flex-col items-center">
@@ -543,26 +534,18 @@ export default function EditorPage() {
                           "border-gray-200 hover:border-blue-300 hover:shadow"
                         }`}
                       >
-                        {/* Handwriting crop */}
-                        {wordHasCoords && imageNaturalWidth > 0 ? (
-                          <div
-                            className="bg-white"
-                            style={{
-                              width: Math.max(40, ((word.xRight! - word.xLeft!) / imageNaturalWidth) * (imageDisplayWidth || 400)),
-                              height: Math.max(28, (lineHeight / imageNaturalHeight) * (imageDisplayWidth || 400) * (imageNaturalHeight / imageNaturalWidth)),
-                              backgroundImage: `url(/api/files/${fileId}/image?t=${imageCacheBust})`,
-                              backgroundPosition: `-${(word.xLeft! / imageNaturalWidth) * (imageDisplayWidth || 400)}px -${(line.yTop / imageNaturalHeight) * (imageDisplayWidth || 400) * (imageNaturalHeight / imageNaturalWidth)}px`,
-                              backgroundSize: `${imageDisplayWidth || 400}px auto`,
-                              backgroundRepeat: "no-repeat",
-                            }}
+                        {/* Handwriting crop via canvas */}
+                        <div className="bg-white">
+                          <WordCropCanvas
+                            imgEl={imgEl}
+                            word={word}
+                            line={line}
+                            maxHeight={50}
+                            key={`wc-${word.id}-${imageVersion}`}
                           />
-                        ) : (
-                          <div className="h-8 w-16 bg-gray-100 flex items-center justify-center text-[9px] text-gray-400">
-                            no crop
-                          </div>
-                        )}
+                        </div>
 
-                        {/* OCR text below the crop */}
+                        {/* OCR text below */}
                         <div className={`w-full text-center px-1.5 py-1 text-sm border-t ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : "bg-gray-50"
@@ -571,7 +554,6 @@ export default function EditorPage() {
                         </div>
                       </div>
 
-                      {/* Add word button after this word */}
                       {renderAddBtn(line.id, word.wordIndex)}
                     </div>
                   );
@@ -584,15 +566,14 @@ export default function EditorPage() {
     );
   }
 
-  // === Render review mode ===
+  // ─── Render: Review Mode ──────────────────────────────
+
   function renderReview() {
     if (!result || !reviewLine || !reviewWord) return null;
-
-    const lineHeight = (reviewLine.yBottom - reviewLine.yTop) * scale;
+    const imgEl = imageRef.current;
 
     return (
       <div className="p-4 space-y-4">
-        {/* Progress bar */}
         <div className="flex items-center justify-between text-sm text-gray-500">
           <span>Word {currentWordNum} of {totalWords}</span>
           <span>Line {reviewLineIdx + 1} of {result.lines.length}</span>
@@ -601,15 +582,9 @@ export default function EditorPage() {
           <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(currentWordNum / totalWords) * 100}%` }} />
         </div>
 
-        {/* Image strip for this line (larger) */}
+        {/* Line image */}
         <div className="border rounded-lg overflow-hidden">
-          <div style={{
-            width: "100%", height: Math.max(lineHeight * 1.5, 60),
-            backgroundImage: `url(/api/files/${fileId}/image?t=${imageCacheBust})`,
-            backgroundPosition: `0 ${-reviewLine.yTop * scale}px`,
-            backgroundSize: `${imageDisplayWidth}px auto`,
-            backgroundRepeat: "no-repeat",
-          }} />
+          <LineCropCanvas imgEl={imgEl} line={reviewLine} maxHeight={120} key={`rlc-${reviewLine.id}-${imageVersion}`} />
         </div>
 
         {/* Full line text with current word highlighted */}
@@ -623,7 +598,7 @@ export default function EditorPage() {
           ))}
         </div>
 
-        {/* Focused word card */}
+        {/* Focused word */}
         <div className="bg-white border-2 border-blue-200 rounded-xl p-6 text-center space-y-4">
           <div className="text-3xl font-bold" dir="rtl">{reviewWord.correctedText || reviewWord.rawText}</div>
           {reviewWord.correctedText && reviewWord.correctedText !== reviewWord.rawText && (
@@ -632,7 +607,7 @@ export default function EditorPage() {
 
           {reviewEditing ? (
             <div className="flex items-center justify-center gap-2">
-              <input ref={reviewInputRef} type="text" dir="rtl" value={reviewEditValue}
+              <input ref={editInputRef} type="text" dir="rtl" value={reviewEditValue}
                 onChange={(e) => setReviewEditValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") reviewSave(); if (e.key === "Escape") setReviewEditing(false); }}
                 className="border-2 border-blue-500 rounded px-3 py-2 text-xl text-right w-48 bg-white" />
@@ -641,38 +616,54 @@ export default function EditorPage() {
             </div>
           ) : (
             <div className="flex items-center justify-center gap-3">
-              <button onClick={reviewConfirm}
-                className="bg-green-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-600 text-sm">
+              <button onClick={reviewConfirm} className="bg-green-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-600 text-sm">
                 &#10003; Correct (Space)
               </button>
               <button onClick={() => { setReviewEditValue(reviewWord.correctedText || reviewWord.rawText); setReviewEditing(true); }}
                 className="bg-blue-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-600 text-sm">
                 &#9998; Edit (Enter)
               </button>
-              <button onClick={reviewDelete}
-                className="bg-red-100 text-red-600 px-4 py-2 rounded-lg font-medium hover:bg-red-200 text-sm">
-                Delete
-              </button>
+              <button onClick={reviewDelete} className="bg-red-100 text-red-600 px-4 py-2 rounded-lg font-medium hover:bg-red-200 text-sm">Delete</button>
             </div>
           )}
         </div>
 
-        {/* Navigation */}
         <div className="flex items-center justify-between">
           <button onClick={reviewPrev} disabled={reviewLineIdx === 0 && reviewWordIdx === 0}
-            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">
-            &rarr; Previous
-          </button>
+            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">&rarr; Previous</button>
           <div className="text-xs text-gray-400">Arrow keys to navigate, Space to confirm, Enter to edit</div>
           <button onClick={reviewNext}
             disabled={reviewLineIdx === result.lines.length - 1 && reviewWordIdx === reviewLine.words.length - 1}
-            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">
-            Next &larr;
-          </button>
+            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">Next &larr;</button>
         </div>
       </div>
     );
   }
+
+  // ─── Render: Training Mode ────────────────────────────
+
+  function renderTraining() {
+    if (!detectedLines.length || !imageNaturalHeight) return null;
+    return (
+      <div className="relative" style={{ width: "100%" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
+        {detectedLines.map((line, i) => (
+          <div key={`train-${i}`} className="absolute left-0 right-0 flex items-center gap-1 px-2" dir="rtl"
+            style={{ top: `${(line.yTop / imageNaturalHeight) * 100}%`, minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%` }}>
+            <span className="text-xs bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center shrink-0">{i + 1}</span>
+            <input type="text" dir="rtl" placeholder={i < 3 ? "Type this line..." : ""} value={trainingTexts[i] || ""}
+              onChange={(e) => setTrainingTexts((prev) => ({ ...prev, [i]: e.target.value }))}
+              className={`flex-1 border rounded px-2 py-1 text-sm text-right ${trainingTexts[i]?.trim() ? "bg-green-50/90 border-green-400" : "bg-white/80 border-gray-300"}`} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // ─── Main Render ──────────────────────────────────────
+
+  const trainingLineCount = Object.values(trainingTexts).filter((t) => t.trim()).length;
 
   if (status === "loading" || loading) return <div className="p-8">Loading...</div>;
 
@@ -688,16 +679,8 @@ export default function EditorPage() {
         <div className="flex gap-2">
           {result && (
             <>
-              {!reviewMode && (
-                <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1 rounded text-sm hover:bg-purple-600">
-                  Review Words
-                </button>
-              )}
-              {reviewMode && (
-                <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">
-                  Exit Review
-                </button>
-              )}
+              {!reviewMode && <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1 rounded text-sm hover:bg-purple-600">Review Words</button>}
+              {reviewMode && <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Exit Review</button>}
               <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600">Confirm All</button>
               <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">Export TXT</button>
             </>
@@ -705,7 +688,7 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Profile info + corrections + training */}
+      {/* Profile info */}
       {profileName && (
         <div className="mb-4 flex items-center gap-3 text-sm flex-wrap">
           <span className="text-gray-500">Profile: <strong>{profileName}</strong></span>
@@ -725,42 +708,28 @@ export default function EditorPage() {
         <div className="bg-white rounded-lg shadow p-4 mb-4 border border-purple-200">
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-medium text-sm">
-              Training Examples
-              <span className="text-gray-400 font-normal ml-2">
-                ({trainingExamples.length} saved — up to 5 used per OCR call)
-              </span>
+              Training Examples <span className="text-gray-400 font-normal ml-2">({trainingExamples.length} saved)</span>
             </h3>
             <div className="flex gap-2">
               {trainingExamples.length > 0 && (
-                <button onClick={clearAllTrainingExamples}
-                  className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">
-                  Clear All
-                </button>
+                <button onClick={clearAllTrainingExamples} className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">Clear All</button>
               )}
-              <button onClick={() => setShowTrainingExamples(false)}
-                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Close</button>
+              <button onClick={() => setShowTrainingExamples(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Close</button>
             </div>
           </div>
           {trainingExamples.length === 0 ? (
             <div className="text-center py-4 text-gray-400 text-sm">
-              <p>No training examples yet.</p>
-              <p className="mt-1">Confirm lines in the editor to automatically save them as training data.</p>
-              <p className="mt-1">The handwriting image + correct text will be shown to the AI when reading new lines.</p>
+              <p>No training examples yet. Confirm lines to save them as training data.</p>
             </div>
           ) : (
             <div className="space-y-2 max-h-64 overflow-auto">
               {trainingExamples.map((ex) => (
                 <div key={ex.id} className="flex items-center gap-3 bg-gray-50 rounded p-2 border">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`/api/profiles/${profileId}/training/image/${ex.id}`}
-                    alt="Training line"
-                    className="h-10 max-w-[200px] object-contain rounded border bg-white"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                  />
+                  <img src={`/api/profiles/${profileId}/training/image/${ex.id}`} alt="" className="h-10 max-w-[200px] object-contain rounded border bg-white"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                   <span className="flex-1 text-sm font-medium" dir="rtl">{ex.text}</span>
-                  <button onClick={() => deleteTrainingExample(ex.id)}
-                    className="text-red-400 hover:text-red-600 text-xs px-1 shrink-0" title="Delete">&#10005;</button>
+                  <button onClick={() => deleteTrainingExample(ex.id)} className="text-red-400 hover:text-red-600 text-xs px-1 shrink-0" title="Delete">&#10005;</button>
                 </div>
               ))}
             </div>
@@ -768,62 +737,47 @@ export default function EditorPage() {
         </div>
       )}
 
+      {/* Corrections panel */}
       {showProfileCorrections && profileCorrections && (
         <div className="bg-white rounded-lg shadow p-4 mb-4 border">
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-medium text-sm">
-              Learned corrections
-              <span className="text-gray-400 font-normal ml-2">
-                ({profileCorrections.totalCorrections} total, {profileCorrections.uniqueWords} unique words)
-              </span>
+              Learned corrections <span className="text-gray-400 font-normal ml-2">({profileCorrections.totalCorrections} total, {profileCorrections.uniqueWords} unique)</span>
             </h3>
             <div className="flex gap-2">
               {profileCorrections.totalCorrections > 0 && (
-                <button onClick={clearAllCorrections}
-                  className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">
-                  Clear All
-                </button>
+                <button onClick={clearAllCorrections} className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">Clear All</button>
               )}
-              <button onClick={() => setShowProfileCorrections(false)}
-                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
-                Close
-              </button>
+              <button onClick={() => setShowProfileCorrections(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Close</button>
             </div>
           </div>
           <div className="max-h-48 overflow-auto space-y-1" dir="rtl">
-            {profileCorrections.words.length === 0 && (
-              <p className="text-gray-400 text-sm text-center py-2">No learned corrections yet</p>
-            )}
+            {profileCorrections.words.length === 0 && <p className="text-gray-400 text-sm text-center py-2">No learned corrections yet</p>}
             {profileCorrections.words.map((word, i) => (
               <div key={i} className="flex items-center gap-2 text-sm bg-gray-50 rounded px-2 py-1">
                 <span className="font-mono bg-gray-200 px-1.5 py-0.5 rounded text-xs">{word.originalText}</span>
                 <span className="text-gray-400">&larr;</span>
                 <div className="flex gap-1 flex-wrap flex-1">
                   {word.corrections.map((c, j) => (
-                    <span key={j} className={`px-1.5 py-0.5 rounded text-xs ${
-                      c.correctedText === word.originalText ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
-                    }`}>
-                      {c.correctedText}
-                      {c.count > 1 && <span className="opacity-60"> x{c.count}</span>}
+                    <span key={j} className={`px-1.5 py-0.5 rounded text-xs ${c.correctedText === word.originalText ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>
+                      {c.correctedText}{c.count > 1 && <span className="opacity-60"> x{c.count}</span>}
                     </span>
                   ))}
                 </div>
                 <button onClick={() => deleteCorrection(word.corrections.flatMap((c) => c.ids))}
-                  className="text-red-400 hover:text-red-600 text-xs px-1" dir="ltr" title="Delete">
-                  &#10005;
-                </button>
+                  className="text-red-400 hover:text-red-600 text-xs px-1" dir="ltr" title="Delete">&#10005;</button>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Re-run suggestion banner */}
+      {/* Rerun banner */}
       {showRerunBanner && !reviewMode && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-4 flex items-center justify-between">
           <div>
             <p className="font-medium text-amber-800">You&apos;ve corrected {correctionCount} words</p>
-            <p className="text-sm text-amber-600">Re-running OCR will use your corrections as training data for better accuracy.</p>
+            <p className="text-sm text-amber-600">Re-running OCR will use your corrections for better accuracy.</p>
           </div>
           <div className="flex gap-2">
             <button onClick={() => setShowRerunBanner(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Dismiss</button>
@@ -832,12 +786,12 @@ export default function EditorPage() {
         </div>
       )}
 
-      {/* OCR Controls (hidden during review) */}
+      {/* OCR Controls */}
       {!reviewMode && (
         <div className="bg-white rounded-lg shadow p-4 mb-6">
           {!result && !trainingMode && (
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <p className="text-sm text-blue-800 mb-2"><strong>Tip:</strong> Type the first 2-3 lines manually to teach the OCR how this writer forms letters.</p>
+              <p className="text-sm text-blue-800 mb-2"><strong>Tip:</strong> Type the first 2-3 lines manually to teach the OCR.</p>
               <button onClick={startTrainingMode} disabled={detectingLines} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
                 {detectingLines ? "Detecting lines..." : "Start Training Mode"}
               </button>
@@ -855,10 +809,10 @@ export default function EditorPage() {
             </div>
           )}
           <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={straightenImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Auto-detect and correct tilt/slant">Straighten</button>
-            <button onClick={() => manualRotate(-1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Rotate 1° counter-clockwise">&#8634; -1°</button>
-            <button onClick={() => manualRotate(1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Rotate 1° clockwise">&#8635; +1°</button>
-            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Straighten + enhance contrast/sharpness">Enhance Image</button>
+            <button onClick={straightenImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">Straighten</button>
+            <button onClick={() => manualRotate(-1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">&#8634; -1&deg;</button>
+            <button onClick={() => manualRotate(1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">&#8635; +1&deg;</button>
+            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">Enhance Image</button>
             {!trainingMode && (
               <button onClick={runOCR} disabled={ocrRunning}
                 className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}>
@@ -884,22 +838,20 @@ export default function EditorPage() {
         </div>
       )}
 
-      {/* Main content */}
-      <div className="bg-white rounded-lg shadow overflow-hidden" ref={containerRef}>
+      {/* Main content area */}
+      <div className="bg-white rounded-lg shadow overflow-hidden">
         {result && !reviewMode && (
           <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b">
             <div className="flex items-center gap-3">
-              <button onClick={() => setShowOverlay(!showOverlay)}
-                className={`text-xs px-3 py-1 rounded font-medium ${showOverlay ? "bg-blue-100 text-blue-700 border border-blue-300" : "bg-gray-200 text-gray-600"}`}>
-                {showOverlay ? "Hide Text" : "Show Text"}
-              </button>
               {correctionCount > 0 && <span className="text-xs text-gray-500">{correctionCount} correction{correctionCount !== 1 ? "s" : ""}</span>}
             </div>
           </div>
         )}
         <div className="overflow-auto">
+          {/* Hidden image element — canvas draws from this */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img ref={imageRef} src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="" className="w-full invisible h-0" onLoad={onImageLoad} />
+          <img ref={imageRef} src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="" className="w-full invisible h-0" onLoad={onImageLoad} crossOrigin="anonymous" />
+
           {reviewMode ? (
             renderReview()
           ) : trainingMode && imageNaturalHeight > 0 ? (
@@ -910,7 +862,7 @@ export default function EditorPage() {
               <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full" />
             </div>
           ) : imageNaturalHeight > 0 ? (
-            renderOverlay()
+            renderWordCards()
           ) : (
             <p className="p-8 text-center text-gray-400">Loading image...</p>
           )}
@@ -926,36 +878,30 @@ export default function EditorPage() {
           if (w) { selectedWord = w; selectedLine = l; break; }
         }
         if (!selectedWord || !selectedLine) return null;
-        const hasCoords = selectedWord.xLeft != null && selectedWord.xRight != null && imageNaturalWidth > 0;
         const isCorrected = selectedWord.correctedText && selectedWord.correctedText !== selectedWord.rawText;
         return (
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-4 py-3">
             <div className="max-w-5xl mx-auto flex items-center gap-3">
-              {/* Handwriting crop preview */}
-              {hasCoords && (
-                <div className="shrink-0 border rounded overflow-hidden bg-white"
-                  style={{
-                    width: Math.min(150, Math.max(60, ((selectedWord.xRight! - selectedWord.xLeft!) / imageNaturalWidth) * (imageDisplayWidth || 400))),
-                    height: Math.max(36, ((selectedLine.yBottom - selectedLine.yTop) / imageNaturalHeight) * (imageDisplayWidth || 400) * (imageNaturalHeight / imageNaturalWidth)),
-                    backgroundImage: `url(/api/files/${fileId}/image?t=${imageCacheBust})`,
-                    backgroundPosition: `-${(selectedWord.xLeft! / imageNaturalWidth) * (imageDisplayWidth || 400)}px -${(selectedLine.yTop / imageNaturalHeight) * (imageDisplayWidth || 400) * (imageNaturalHeight / imageNaturalWidth)}px`,
-                    backgroundSize: `${imageDisplayWidth || 400}px auto`,
-                    backgroundRepeat: "no-repeat",
-                  }}
+              {/* Handwriting crop preview via canvas */}
+              <div className="shrink-0 border rounded overflow-hidden bg-white">
+                <WordCropCanvas
+                  imgEl={imageRef.current}
+                  word={selectedWord}
+                  line={selectedLine}
+                  maxHeight={48}
+                  key={`ebc-${selectedWord.id}-${imageVersion}`}
                 />
-              )}
+              </div>
 
               <div className="flex flex-col gap-1 shrink-0" dir="rtl">
                 <span className="text-[10px] text-gray-400">OCR detected:</span>
                 <span className="text-base font-mono bg-gray-100 px-2 py-0.5 rounded">{selectedWord.rawText}</span>
-                {isCorrected && (
-                  <span className="text-[10px] text-green-600">Previously corrected to: {selectedWord.correctedText}</span>
-                )}
+                {isCorrected && <span className="text-[10px] text-green-600">Corrected: {selectedWord.correctedText}</span>}
               </div>
 
               <div className="flex-1 min-w-0" dir="rtl">
                 <input
-                  ref={reviewInputRef}
+                  ref={editInputRef}
                   type="text"
                   dir="rtl"
                   value={editValue}
