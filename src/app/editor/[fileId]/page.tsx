@@ -618,32 +618,23 @@ export default function EditorPage() {
                       {isLocked && renderAddBtn(line.id, -1)}
                       {line.words.map((word) => {
                         const isCorrected = word.correctedText && word.correctedText !== word.rawText;
-                        const isEditing = editingWord === word.id;
+                        const isSelected = editingWord === word.id;
+                        const isWordHover = hoveredWordId === word.id;
                         const displayText = word.correctedText || word.rawText;
 
                         return (
                           <span key={word.id} className="inline-flex items-center">
-                            {isEditing ? (
-                              <span className="inline-flex items-center gap-1">
-                                <input type="text" dir="rtl" value={editValue} onChange={(e) => setEditValue(e.target.value)}
-                                  onKeyDown={(e) => { if (e.key === "Enter") saveWord(word.id, editValue); if (e.key === "Escape") setEditingWord(null); }}
-                                  className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white" autoFocus />
-                                <button onClick={() => saveWord(word.id, editValue)} className="text-green-600 text-sm font-bold">&#10003;</button>
-                                <button onClick={() => setEditingWord(null)} className="text-red-500 text-sm font-bold">&#10005;</button>
-                                <button onClick={() => deleteWord(word.id)} className="text-red-400 text-xs hover:text-red-600" title="Delete word">&#128465;</button>
-                              </span>
-                            ) : (
-                              <span onClick={(e) => { e.stopPropagation(); startEdit(word); }}
-                                onMouseEnter={() => setHoveredWordId(word.id)}
-                                onMouseLeave={() => setHoveredWordId(null)}
-                                className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
-                                  hoveredWordId === word.id ? "bg-orange-100 ring-2 ring-orange-400 shadow-md" :
-                                  isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
-                                } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
-                                title={isCorrected ? `Original: ${word.rawText}` : "Click to correct"}>
-                                {displayText}
-                              </span>
-                            )}
+                            <span onClick={(e) => { e.stopPropagation(); startEdit(word); }}
+                              onMouseEnter={() => setHoveredWordId(word.id)}
+                              onMouseLeave={() => setHoveredWordId(null)}
+                              className={`cursor-pointer px-1.5 py-0.5 rounded transition-all ${
+                                isSelected ? "bg-orange-200 ring-2 ring-orange-500 shadow-md font-bold" :
+                                isWordHover ? "bg-orange-100 ring-2 ring-orange-400 shadow-md" :
+                                isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:bg-blue-50"
+                              } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
+                              title={isCorrected ? `Original: ${word.rawText}` : "Click to edit"}>
+                              {displayText}
+                            </span>
                             {isLocked && renderAddBtn(line.id, word.wordIndex)}
                           </span>
                         );
@@ -759,7 +750,7 @@ export default function EditorPage() {
   if (status === "loading" || loading) return <div className="p-8">Loading...</div>;
 
   return (
-    <div className="max-w-5xl mx-auto p-6">
+    <div className={`max-w-5xl mx-auto p-6 ${editingWord ? "pb-28" : ""}`}>
       {/* Header */}
       <div className="flex justify-between items-center mb-4">
         <div className="flex items-center gap-4">
@@ -999,15 +990,50 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Legend */}
-      {result && !reviewMode && (
-        <div className="mt-4 flex flex-wrap gap-4 text-xs text-gray-500">
-          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-gray-50 border border-gray-200 rounded"></span>OCR text (click to edit)</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-green-100 border border-green-300 rounded"></span>Corrected/confirmed</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-red-100 border border-red-300 rounded"></span>Unclear [?]</span>
-          <span className="flex items-center gap-1"><span className="text-gray-300 text-lg leading-none">+</span> Add word</span>
-        </div>
-      )}
+      {/* Fixed edit bar at bottom */}
+      {editingWord && result && !reviewMode && (() => {
+        const selectedWord = result.lines.flatMap((l) => l.words).find((w) => w.id === editingWord);
+        if (!selectedWord) return null;
+        return (
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-4 py-3">
+            <div className="max-w-5xl mx-auto flex items-center gap-3" dir="rtl">
+              <span className="text-sm text-gray-500 shrink-0">Editing:</span>
+              <span className="text-lg font-mono bg-gray-100 px-2 py-1 rounded">{selectedWord.rawText}</span>
+              <span className="text-gray-400 shrink-0">&larr;</span>
+              <input
+                ref={reviewInputRef}
+                type="text"
+                dir="rtl"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveWord(selectedWord.id, editValue);
+                  if (e.key === "Escape") setEditingWord(null);
+                }}
+                className="border-2 border-orange-400 rounded px-3 py-1.5 text-lg text-right bg-white flex-1 min-w-0 focus:outline-none focus:ring-2 focus:ring-orange-300"
+                autoFocus
+              />
+              <div className="flex gap-2 shrink-0" dir="ltr">
+                <button onClick={() => saveWord(selectedWord.id, editValue)}
+                  className="bg-green-500 text-white px-4 py-1.5 rounded font-medium hover:bg-green-600 text-sm">
+                  Save
+                </button>
+                <button onClick={() => setEditingWord(null)}
+                  className="bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm hover:bg-gray-300">
+                  Cancel
+                </button>
+                <button onClick={() => deleteWord(selectedWord.id)}
+                  className="bg-red-100 text-red-600 px-3 py-1.5 rounded text-sm hover:bg-red-200">
+                  Delete
+                </button>
+              </div>
+            </div>
+            <div className="max-w-5xl mx-auto mt-1 text-[10px] text-gray-400" dir="ltr">
+              Enter = save &middot; Escape = cancel
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
