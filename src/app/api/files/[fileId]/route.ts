@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { unlink } from "fs/promises";
+import { supabase, BUCKET } from "@/lib/supabase";
 
 export async function DELETE(
   req: NextRequest,
@@ -28,8 +28,8 @@ export async function DELETE(
   // Delete token usage
   await prisma.tokenUsage.deleteMany({ where: { fileId: file.id } });
 
-  // Delete file from disk
-  try { await unlink(file.storagePath); } catch { /* ignore */ }
+  // Delete file from Supabase Storage
+  await supabase.storage.from(BUCKET).remove([file.storagePath]);
 
   // Delete DB record
   await prisma.file.delete({ where: { id: file.id } });

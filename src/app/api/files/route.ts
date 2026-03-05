@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import { supabase, BUCKET } from "@/lib/supabase";
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -32,13 +31,19 @@ export async function POST(req: NextRequest) {
 
   if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
-  const uploadsDir = path.join(process.cwd(), "uploads", userId);
-  await mkdir(uploadsDir, { recursive: true });
-
-  const filename = `${Date.now()}-${file.name}`;
-  const storagePath = path.join(uploadsDir, filename);
   const bytes = await file.arrayBuffer();
-  await writeFile(storagePath, Buffer.from(bytes));
+  const buffer = Buffer.from(bytes);
+  const storagePath = `${userId}/${Date.now()}-${file.name}`;
+
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(storagePath, buffer, {
+      contentType: file.type || "image/jpeg",
+    });
+
+  if (error) {
+    return NextResponse.json({ error: "Upload failed: " + error.message }, { status: 500 });
+  }
 
   const dbFile = await prisma.file.create({
     data: {

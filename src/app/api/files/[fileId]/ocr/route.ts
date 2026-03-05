@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { runOCR } from "@/lib/ocr";
-import { readFile } from "fs/promises";
+import { supabase, BUCKET } from "@/lib/supabase";
 import path from "path";
 
 export async function POST(
@@ -23,8 +23,16 @@ export async function POST(
 
   const { firstLineHint } = await req.json().catch(() => ({}));
 
-  // Read image and convert to base64
-  const imageData = await readFile(file.storagePath);
+  // Download image from Supabase Storage
+  const { data: blob, error } = await supabase.storage
+    .from(BUCKET)
+    .download(file.storagePath);
+
+  if (error || !blob) {
+    return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
+  }
+
+  const imageData = Buffer.from(await blob.arrayBuffer());
   const base64 = imageData.toString("base64");
   const ext = path.extname(file.filename).toLowerCase();
   const mediaType =

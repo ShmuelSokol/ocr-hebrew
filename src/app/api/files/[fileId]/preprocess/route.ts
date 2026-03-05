@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { readFile, writeFile } from "fs/promises";
+import { supabase, BUCKET } from "@/lib/supabase";
 import sharp from "sharp";
 
 export async function POST(
@@ -18,38 +18,46 @@ export async function POST(
   });
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { contrast, brightness, sharpen, grayscale, rotate } = await req.json();
+  const { contrast, brightness, sharpen: doSharpen, grayscale, rotate } = await req.json();
 
-  const imageData = await readFile(file.storagePath);
+  // Download from Supabase
+  const { data: blob, error } = await supabase.storage
+    .from(BUCKET)
+    .download(file.storagePath);
+
+  if (error || !blob) {
+    return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
+  }
+
+  const imageData = Buffer.from(await blob.arrayBuffer());
   let pipeline = sharp(imageData);
 
-  // Auto-rotate based on EXIF
   pipeline = pipeline.rotate(rotate || 0);
 
   if (grayscale) {
     pipeline = pipeline.greyscale();
   }
 
-  // Adjust contrast and brightness using linear transform
-  // linear(a, b) applies: output = a * input + b
-  const a = contrast != null ? contrast : 1.0; // 1.0 = no change, >1 = more contrast
-  const b = brightness != null ? brightness : 0; // 0 = no change, >0 = brighter
+  const a = contrast != null ? contrast : 1.0;
+  const b = brightness != null ? brightness : 0;
   if (a !== 1.0 || b !== 0) {
     pipeline = pipeline.linear(a, b);
   }
 
-  if (sharpen) {
+  if (doSharpen) {
     pipeline = pipeline.sharpen();
   }
 
-  // Normalize (auto-contrast)
   pipeline = pipeline.normalize();
 
   const processed = await pipeline.jpeg({ quality: 95 }).toBuffer();
 
-  // Save as new file path
+  // Upload processed image back, replacing original
   const newPath = file.storagePath.replace(/(\.[^.]+)$/, "_processed$1");
-  await writeFile(newPath, processed);
+  await supabase.storage.from(BUCKET).upload(newPath, processed, {
+    contentType: "image/jpeg",
+    upsert: true,
+  });
 
   // Update file record
   await prisma.file.update({

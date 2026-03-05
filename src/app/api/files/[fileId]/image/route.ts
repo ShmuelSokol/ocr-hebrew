@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { readFile } from "fs/promises";
+import { supabase, BUCKET } from "@/lib/supabase";
 import path from "path";
 
 export async function GET(
@@ -19,12 +19,18 @@ export async function GET(
 
   if (!file) return new NextResponse("Not found", { status: 404 });
 
-  const data = await readFile(file.storagePath);
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .download(file.storagePath);
+
+  if (error || !data) return new NextResponse("File not found in storage", { status: 404 });
+
+  const buffer = Buffer.from(await data.arrayBuffer());
   const ext = path.extname(file.filename).toLowerCase();
   const contentType =
     ext === ".png" ? "image/png" : ext === ".gif" ? "image/gif" : "image/jpeg";
 
-  return new NextResponse(data, {
+  return new NextResponse(buffer, {
     headers: { "Content-Type": contentType },
   });
 }
