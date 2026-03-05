@@ -525,16 +525,16 @@ export default function EditorPage() {
 
                   return (
                     <div key={word.id} className="inline-flex flex-col items-center">
-                      <div
+                      <button
                         onClick={() => startEdit(word)}
-                        className={`cursor-pointer rounded-lg border transition-all flex flex-col items-center overflow-hidden ${
-                          isSelected ? "border-orange-500 ring-2 ring-orange-300 shadow-lg" :
-                          isCorrected ? "border-green-400 bg-green-50" :
-                          word.rawText === "[?]" ? "border-red-300 bg-red-50" :
-                          "border-gray-200 hover:border-blue-300 hover:shadow"
+                        className={`rounded-lg border-2 transition-all flex flex-col items-center overflow-hidden ${
+                          isSelected ? "border-orange-500 ring-2 ring-orange-300 shadow-lg scale-105" :
+                          isCorrected ? "border-green-400 bg-green-50 hover:border-green-500 hover:shadow" :
+                          word.rawText === "[?]" ? "border-red-300 bg-red-50 hover:border-red-400" :
+                          "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
                         }`}
                       >
-                          {/* Handwriting crop via canvas (only if coordinates exist) */}
+                        {/* Handwriting crop via canvas (only if coordinates exist) */}
                         {word.xLeft != null && word.xRight != null && (
                           <div className="bg-white">
                             <WordCropCanvas
@@ -548,15 +548,15 @@ export default function EditorPage() {
                         )}
 
                         {/* OCR text */}
-                        <div className={`w-full text-center px-2 py-1.5 text-sm ${
+                        <div className={`w-full text-center px-3 py-2 text-base font-medium ${
                           word.xLeft != null ? "border-t" : ""
                         } ${
                           isSelected ? "bg-orange-100" :
-                          isCorrected ? "bg-green-50" : "bg-gray-50"
+                          isCorrected ? "bg-green-50" : ""
                         }`} dir="rtl">
                           {displayText}
                         </div>
-                      </div>
+                      </button>
 
                       {renderAddBtn(line.id, word.wordIndex)}
                     </div>
@@ -846,6 +846,7 @@ export default function EditorPage() {
       <div className="bg-white rounded-lg shadow overflow-hidden">
         {result && !reviewMode && (
           <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b">
+            <span className="text-xs text-gray-500">Click any word to edit it</span>
             <div className="flex items-center gap-3">
               {correctionCount > 0 && <span className="text-xs text-gray-500">{correctionCount} correction{correctionCount !== 1 ? "s" : ""}</span>}
             </div>
@@ -886,8 +887,8 @@ export default function EditorPage() {
         return (
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-4 py-3">
             <div className="max-w-5xl mx-auto flex items-center gap-3">
-              {/* Handwriting crop preview — line crop if no word coords */}
-              <div className="shrink-0 border rounded overflow-hidden bg-white">
+              {/* Handwriting crop preview */}
+              <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px]">
                 {selectedWord.xLeft != null && selectedWord.xRight != null ? (
                   <WordCropCanvas
                     imgEl={imageRef.current}
