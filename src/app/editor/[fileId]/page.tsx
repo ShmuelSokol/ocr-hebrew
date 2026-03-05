@@ -304,13 +304,58 @@ export default function EditorPage() {
   }
 
   async function saveWord(wordId: string, corrected: string) {
-    await fetch(`/api/words/${wordId}`, {
+    // Update locally first — no reload
+    setResult(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        lines: prev.lines.map(l => ({
+          ...l,
+          words: l.words.map(w => w.id === wordId ? { ...w, correctedText: corrected } : w),
+        })),
+      };
+    });
+    if (corrected !== result?.lines.flatMap(l => l.words).find(w => w.id === wordId)?.rawText) {
+      setCorrectionCount(c => c + 1);
+    }
+    // Save in background
+    fetch(`/api/words/${wordId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ correctedText: corrected }),
     });
-    setEditingWord(null);
-    await loadResult();
+  }
+
+  // Save current word and move to next
+  async function saveAndNext(wordId: string, corrected: string) {
+    await saveWord(wordId, corrected);
+    editNextWord(wordId);
+  }
+
+  // Save current word and move to previous
+  async function saveAndPrev(wordId: string, corrected: string) {
+    await saveWord(wordId, corrected);
+    editPrevWord(wordId);
+  }
+
+  function editNextWord(currentWordId: string) {
+    if (!result) return;
+    const allWords = result.lines.flatMap(l => l.words);
+    const idx = allWords.findIndex(w => w.id === currentWordId);
+    if (idx >= 0 && idx < allWords.length - 1) {
+      startEdit(allWords[idx + 1]);
+    } else {
+      setEditingWord(null); // was last word
+    }
+  }
+
+  function editPrevWord(currentWordId: string) {
+    if (!result) return;
+    const allWords = result.lines.flatMap(l => l.words);
+    const idx = allWords.findIndex(w => w.id === currentWordId);
+    if (idx > 0) {
+      startEdit(allWords[idx - 1]);
+    }
   }
 
   async function deleteWord(wordId: string) {
@@ -821,13 +866,20 @@ export default function EditorPage() {
           if (w) { selectedWord = w; selectedLine = l; break; }
         }
         if (!selectedWord || !selectedLine) return null;
-        const isCorrected = selectedWord.correctedText && selectedWord.correctedText !== selectedWord.rawText;
+        const allWords = result.lines.flatMap(l => l.words);
+        const wordIdx = allWords.findIndex(w => w.id === selectedWord.id);
+        const isFirst = wordIdx <= 0;
+        const isLast = wordIdx >= allWords.length - 1;
         return (
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-3 py-2 sm:px-4 sm:py-3 safe-bottom">
-            <div className="max-w-5xl mx-auto space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-3">
-              {/* Top row on mobile: crop + OCR text */}
+            <div className="max-w-5xl mx-auto space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
+              {/* Prev button */}
+              <button onClick={() => saveAndPrev(selectedWord!.id, editValue)} disabled={isFirst}
+                className="hidden sm:block shrink-0 px-2 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 disabled:opacity-30 text-sm">&rarr;</button>
+
+              {/* Crop */}
               <div className="flex items-center gap-2 sm:gap-3">
-                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px] sm:max-w-[300px]">
+                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[150px] sm:max-w-[200px]">
                   {selectedWord.xLeft != null && selectedWord.xRight != null ? (
                     <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${imageVersion}`} />
                   ) : (
@@ -835,12 +887,12 @@ export default function EditorPage() {
                   )}
                 </div>
                 <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
-                  <span className="text-base font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>
-                  {isCorrected && <span className="text-[10px] text-green-600 truncate">Corrected: {selectedWord.correctedText}</span>}
+                  <span className="text-sm font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>
+                  <span className="text-[10px] text-gray-400">{wordIdx + 1}/{allWords.length}</span>
                 </div>
               </div>
 
-              {/* Input row */}
+              {/* Input */}
               <div className="flex-1 min-w-0" dir="rtl">
                 <input
                   ref={editInputRef}
@@ -849,8 +901,10 @@ export default function EditorPage() {
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") saveWord(selectedWord!.id, editValue);
-                    if (e.key === "Escape") setEditingWord(null);
+                    if (e.key === "Enter") { e.preventDefault(); saveAndNext(selectedWord!.id, editValue); }
+                    else if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); saveAndNext(selectedWord!.id, editValue); }
+                    else if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); saveAndPrev(selectedWord!.id, editValue); }
+                    else if (e.key === "Escape") setEditingWord(null);
                   }}
                   className="w-full border-2 border-orange-400 rounded-lg px-3 py-3 sm:py-2 text-lg text-right bg-white focus:outline-none focus:ring-2 focus:ring-orange-300"
                   autoFocus
@@ -858,14 +912,25 @@ export default function EditorPage() {
               </div>
 
               {/* Action buttons */}
-              <div className="flex gap-2 shrink-0">
-                <button onClick={() => saveWord(selectedWord!.id, editValue)}
-                  className="flex-1 sm:flex-none bg-green-500 text-white px-4 py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 active:bg-green-700 text-base sm:text-sm">Save</button>
+              <div className="flex gap-1.5 shrink-0">
+                <button onClick={() => saveAndNext(selectedWord!.id, editValue)}
+                  className="flex-1 sm:flex-none bg-green-500 text-white px-3 py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 active:bg-green-700 text-base sm:text-sm">Next</button>
                 <button onClick={() => setEditingWord(null)}
-                  className="flex-1 sm:flex-none bg-gray-200 text-gray-700 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-gray-300">Cancel</button>
+                  className="flex-1 sm:flex-none bg-gray-200 text-gray-700 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-gray-300">Done</button>
                 <button onClick={() => deleteWord(selectedWord!.id)}
-                  className="bg-red-100 text-red-600 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-red-200">Del</button>
+                  className="bg-red-100 text-red-600 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-red-200">Del</button>
               </div>
+
+              {/* Next button */}
+              <button onClick={() => saveAndNext(selectedWord!.id, editValue)} disabled={isLast}
+                className="hidden sm:block shrink-0 px-2 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 disabled:opacity-30 text-sm">&larr;</button>
+            </div>
+            {/* Mobile nav row */}
+            <div className="flex gap-2 mt-2 sm:hidden">
+              <button onClick={() => saveAndPrev(selectedWord!.id, editValue)} disabled={isFirst}
+                className="flex-1 py-2.5 rounded-lg bg-gray-200 active:bg-gray-400 disabled:opacity-30 text-sm font-medium">&rarr; Prev</button>
+              <button onClick={() => saveAndNext(selectedWord!.id, editValue)} disabled={isLast}
+                className="flex-1 py-2.5 rounded-lg bg-gray-200 active:bg-gray-400 disabled:opacity-30 text-sm font-medium">Next &larr;</button>
             </div>
           </div>
         );
