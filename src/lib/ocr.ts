@@ -189,6 +189,92 @@ function splitAtValleys(
   return subLines.length > 0 ? subLines : [{ yTop, yBottom }];
 }
 
+// ─── Word Segmentation ──────────────────────────────────
+
+/**
+ * Find word boundaries within a line using column projection (vertical ink density).
+ * Returns array of {xLeft, xRight} for each word-like region, sorted right-to-left (RTL).
+ */
+export function segmentWords(
+  data: Buffer,
+  width: number,
+  yTop: number,
+  yBottom: number,
+  expectedWordCount: number,
+): { xLeft: number; xRight: number }[] {
+  const lineHeight = yBottom - yTop;
+  if (lineHeight < 5 || width < 10) return [];
+
+  // Calculate ink density per column within this line
+  const colDensity: number[] = [];
+  for (let x = 0; x < width; x++) {
+    let dark = 0;
+    for (let y = yTop; y < yBottom; y++) {
+      if (data[y * width + x] < 160) dark++;
+    }
+    colDensity.push(dark / lineHeight);
+  }
+
+  // Smooth columns to reduce noise
+  const smoothed = smoothArray(colDensity, Math.max(2, Math.floor(width * 0.003)));
+
+  // Find ink threshold — columns with density above this have ink
+  const maxCol = Math.max(...smoothed);
+  const inkThreshold = Math.max(0.02, maxCol * 0.08);
+
+  // Find ink regions (runs of columns with ink)
+  const regions: { xLeft: number; xRight: number }[] = [];
+  let inInk = false;
+  let start = 0;
+  const minGapWidth = Math.max(3, Math.floor(width * 0.008)); // min gap between words
+  let gapCount = 0;
+
+  for (let x = 0; x < width; x++) {
+    if (smoothed[x] > inkThreshold) {
+      if (!inInk) { start = x; inInk = true; }
+      gapCount = 0;
+    } else if (inInk) {
+      gapCount++;
+      if (gapCount >= minGapWidth) {
+        const end = x - gapCount;
+        if (end - start >= 3) { // min word width
+          regions.push({ xLeft: start, xRight: end });
+        }
+        inInk = false;
+      }
+    }
+  }
+  if (inInk) {
+    regions.push({ xLeft: start, xRight: width - 1 });
+  }
+
+  if (regions.length === 0) return [];
+
+  // If we have more regions than expected words, merge closest pairs
+  // (some letters may be split). If fewer, that's ok — some words may be connected.
+  const merged = [...regions];
+  while (merged.length > expectedWordCount && merged.length > 1) {
+    // Find the smallest gap between adjacent regions
+    let minGap = Infinity;
+    let minIdx = 0;
+    for (let i = 0; i < merged.length - 1; i++) {
+      const gap = merged[i + 1].xLeft - merged[i].xRight;
+      if (gap < minGap) { minGap = gap; minIdx = i; }
+    }
+    // Merge the two regions
+    merged[minIdx] = {
+      xLeft: merged[minIdx].xLeft,
+      xRight: merged[minIdx + 1].xRight,
+    };
+    merged.splice(minIdx + 1, 1);
+  }
+
+  // Sort right-to-left for Hebrew (rightmost region = first word in RTL)
+  merged.sort((a, b) => b.xLeft - a.xLeft);
+
+  return merged;
+}
+
 // ─── Skew Detection ─────────────────────────────────────
 
 export async function detectSkew(imageBuffer: Buffer): Promise<number> {
@@ -570,13 +656,30 @@ export async function runOCR(
   // Pad if still short
   while (alignedTexts.length < detected) alignedTexts.push("[?]");
 
-  // Build results — words are text splits from OCR output
+  // Word segmentation: find word boundaries in the image for each line
+  const sharp = (await import("sharp")).default;
+  const { data: grayData, info: grayInfo } = await sharp(imageBuffer)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const imgWidth = grayInfo.width;
+
+  // Build results — words are text splits with x-coordinates from segmentation
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
     const text = alignedTexts[i] || "[?]";
     const wordTexts = text.split(/\s+/).filter(w => w.length > 0);
 
+    // Segment words in this line's image region
+    const wordRegions = wordTexts.length > 0
+      ? segmentWords(grayData, imgWidth, pos.yTop, pos.yBottom, wordTexts.length)
+      : [];
+
     const words: OCRWordResult[] = wordTexts.length > 0
-      ? wordTexts.map(wt => ({ text: wt, xLeft: null, xRight: null }))
+      ? wordTexts.map((wt, wi) => ({
+          text: wt,
+          xLeft: wi < wordRegions.length ? wordRegions[wi].xLeft : null,
+          xRight: wi < wordRegions.length ? wordRegions[wi].xRight : null,
+        }))
       : [{ text: "[?]", xLeft: null, xRight: null }];
 
     return {

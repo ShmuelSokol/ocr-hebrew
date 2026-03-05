@@ -40,28 +40,29 @@ export async function PATCH(
     data: { correctedText: lineCorrected },
   });
 
-  // Auto-save line crop as training example (background, non-blocking)
-  // This links the correction to the actual handwriting image
+  // Auto-save word crop as training example (background, non-blocking)
+  // This links the correction to the actual handwriting image of this specific word
   const file = word.line.result.file;
-  if (file.profileId) {
-    saveLineTraining(userId, file, word.line, lineCorrected).catch(() => {});
+  if (file.profileId && word.xLeft != null && word.xRight != null) {
+    saveWordTraining(userId, file, word.line, word, correctedText).catch(() => {});
   }
 
   return NextResponse.json({ success: true });
 }
 
-// Save/update a training example for this line (line crop image + corrected text)
-async function saveLineTraining(
+// Save a word-level crop as training data (word handwriting image + corrected text)
+async function saveWordTraining(
   userId: string,
   file: { id: string; storagePath: string; profileId: string | null },
   line: { id: string; lineIndex: number; yTop: number; yBottom: number },
+  word: { id: string; wordIndex: number; xLeft: number | null; xRight: number | null },
   text: string,
 ) {
-  if (!file.profileId || !text.trim()) return;
+  if (!file.profileId || !text.trim() || word.xLeft == null || word.xRight == null) return;
 
-  // Check if we already have a training example for this line
+  // Check if we already have a training example for this word
   const existing = await prisma.trainingExample.findUnique({
-    where: { sourceLineId: line.id },
+    where: { sourceLineId: word.id },
   });
 
   if (existing) {
@@ -73,7 +74,7 @@ async function saveLineTraining(
     return;
   }
 
-  // First time: crop the line image and upload
+  // Crop the word from the image
   const sharp = (await import("sharp")).default;
   const { data: blob, error } = await supabase.storage.from(BUCKET).download(file.storagePath);
   if (error || !blob) return;
@@ -83,17 +84,23 @@ async function saveLineTraining(
   const imgHeight = metadata.height || 1;
   const imgWidth = metadata.width || 1;
 
+  // Pad around the word for context
+  const padX = Math.floor((word.xRight - word.xLeft) * 0.1);
   const padY = Math.floor((line.yBottom - line.yTop) * 0.15);
-  const yTop = Math.max(0, line.yTop - padY);
-  const yBottom = Math.min(imgHeight, line.yBottom + padY);
-  if (yBottom - yTop < 5) return;
+  const left = Math.max(0, word.xLeft - padX);
+  const top = Math.max(0, line.yTop - padY);
+  const right = Math.min(imgWidth, word.xRight + padX);
+  const bottom = Math.min(imgHeight, line.yBottom + padY);
+  const cropW = right - left;
+  const cropH = bottom - top;
+  if (cropW < 5 || cropH < 5) return;
 
   const cropBuffer = await sharp(imageBuffer)
-    .extract({ left: 0, top: yTop, width: imgWidth, height: yBottom - yTop })
+    .extract({ left, top, width: cropW, height: cropH })
     .jpeg({ quality: 90 })
     .toBuffer();
 
-  const storagePath = `training/${userId}/${file.profileId}/${Date.now()}_line${line.lineIndex}.jpg`;
+  const storagePath = `training/${userId}/${file.profileId}/${Date.now()}_w${word.wordIndex}.jpg`;
   const { error: upError } = await supabase.storage
     .from(BUCKET)
     .upload(storagePath, cropBuffer, { contentType: "image/jpeg", upsert: false });
@@ -104,7 +111,7 @@ async function saveLineTraining(
       profileId: file.profileId,
       storagePath,
       text,
-      sourceLineId: line.id,
+      sourceLineId: word.id, // using sourceLineId to track word-level too
     },
   });
 }
