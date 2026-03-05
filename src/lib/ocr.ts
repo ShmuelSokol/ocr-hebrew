@@ -218,9 +218,26 @@ export async function runOCR(
       `Then read the rest of the page using that knowledge.\n`;
   }
 
+  const systemPrompt =
+    "You are a careful handwriting transcription tool. Your ONLY job is to read exactly " +
+    "what is written on the page — letter by letter, stroke by stroke. " +
+    "You must NEVER generate text from your knowledge of Torah, Talmud, or any other source. " +
+    "You are NOT a Torah scholar here. You are a camera that reads ink shapes.\n\n" +
+    "CRITICAL: If you recognize a phrase and your brain wants to auto-complete it, STOP. " +
+    "Look at each letter individually. The writer may have written something different " +
+    "from what you expect. Spell out ONLY what the ink shows.\n\n" +
+    "When in doubt, write [?]. A [?] is infinitely better than a hallucinated word. " +
+    "Getting 70% right with [?] for the rest is far more useful than getting 100% of " +
+    "confident-but-wrong text.";
+
   const response = await client.messages.create({
     model: "claude-opus-4-20250514",
-    max_tokens: 8192,
+    max_tokens: 16384,
+    thinking: {
+      type: "enabled",
+      budget_tokens: 10000,
+    },
+    system: systemPrompt,
     messages: [
       {
         role: "user",
@@ -242,15 +259,18 @@ export async function runOCR(
               correctionContext +
               "\nTRANSCRIPTION RULES:\n" +
               "1. Output EXACTLY " + detectedLines.length + " lines of text, one per line in the image.\n" +
-              "2. Read each word letter-by-letter from the handwriting. Do NOT auto-complete from memory.\n" +
-              "3. These are someone's ORIGINAL notes (chiddushim). They are NOT copying a sefer word-for-word.\n" +
-              "4. The writer quotes sources but also adds their own analysis and comments.\n" +
-              "5. If you cannot read a word, write [?] — this is MUCH better than guessing.\n" +
+              "2. For EACH word: look at each letter shape individually. What does the INK show? " +
+              "Do NOT recognize the word — READ the letters one by one.\n" +
+              "3. These are someone's ORIGINAL notes (chiddushim). They are NOT copying a sefer. " +
+              "The text will NOT match any known source exactly.\n" +
+              "4. If a word looks like it could be two different words, write what the LETTERS show, not what makes more sense contextually.\n" +
+              "5. If you cannot read a letter or word, write [?]. Do NOT guess.\n" +
               "6. Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, פ״ו, הל׳, דהיינו, א״כ, ד״ה\n" +
               "7. Output ONLY the Hebrew text. No commentary, no line numbers, no labels.\n" +
-              "8. Each output line must correspond to one handwritten line in the image." +
+              "8. Each output line must correspond to one handwritten line in the image.\n" +
+              "9. NEVER auto-complete a pasuk, mishna, or gemara quote from memory. Read ONLY what is written." +
               (fewShotLines && fewShotLines.length > 0
-                ? "\n9. For lines with verified transcriptions above, output the EXACT verified text."
+                ? "\n10. For lines with verified transcriptions above, output the EXACT verified text."
                 : ""),
           },
         ],
@@ -258,7 +278,9 @@ export async function runOCR(
     ],
   });
 
-  const rawText = response.content[0].type === "text" ? response.content[0].text : "";
+  // Extract text from response (skip thinking blocks)
+  const textBlock = response.content.find((b: { type: string }) => b.type === "text");
+  const rawText = textBlock && "text" in textBlock ? textBlock.text : "";
 
   // Track token usage
   const modelId = "claude-opus-4-20250514";
