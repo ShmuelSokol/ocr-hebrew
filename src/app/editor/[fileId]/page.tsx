@@ -34,6 +34,7 @@ interface DetectedLine {
 }
 
 // Canvas-based word crop component — draws directly from the loaded image
+// If word coordinates are null, estimates position from character proportions (RTL)
 function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
   imgEl: HTMLImageElement | null;
   word: Word;
@@ -45,9 +46,38 @@ function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
-    if (word.xLeft == null || word.xRight == null) return;
 
-    const srcW = word.xRight - word.xLeft;
+    let xLeft = word.xLeft;
+    let xRight = word.xRight;
+
+    // Estimate word bounds from character proportions when coordinates are missing
+    if (xLeft == null || xRight == null) {
+      const imgW = imgEl.naturalWidth;
+      const words = line.words;
+      const totalChars = words.reduce((sum, w) => sum + (w.correctedText || w.rawText).length, 0);
+      if (totalChars === 0) return;
+
+      // Add spacing between words (1 char worth per gap)
+      const totalWithSpaces = totalChars + Math.max(0, words.length - 1);
+      const charWidth = imgW / totalWithSpaces;
+      const padding = charWidth * 0.5; // extra padding on each side
+
+      // RTL: first word is at the right edge
+      let offset = 0;
+      for (const w of words) {
+        const wLen = (w.correctedText || w.rawText).length;
+        if (w.id === word.id) {
+          // RTL: x position from right
+          xRight = Math.min(imgW, Math.round(imgW - offset * charWidth + padding));
+          xLeft = Math.max(0, Math.round(imgW - (offset + wLen) * charWidth - padding));
+          break;
+        }
+        offset += wLen + 1; // +1 for space
+      }
+    }
+
+    if (xLeft == null || xRight == null) return;
+    const srcW = xRight - xLeft;
     const srcH = line.yBottom - line.yTop;
     if (srcW <= 0 || srcH <= 0) return;
 
@@ -57,12 +87,8 @@ function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(imgEl, word.xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
-  }, [imgEl, word.xLeft, word.xRight, line.yTop, line.yBottom, maxHeight]);
-
-  if (word.xLeft == null || word.xRight == null) {
-    return <div className="h-8 w-16 bg-gray-100 flex items-center justify-center text-[9px] text-gray-400">no crop</div>;
-  }
+    ctx.drawImage(imgEl, xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
+  }, [imgEl, word, line, maxHeight]);
 
   return <canvas ref={canvasRef} className="block" />;
 }
@@ -506,23 +532,19 @@ export default function EditorPage() {
                           "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
                         }`}
                       >
-                        {/* Handwriting crop via canvas (only if coordinates exist) */}
-                        {word.xLeft != null && word.xRight != null && (
-                          <div className="bg-white">
-                            <WordCropCanvas
-                              imgEl={imgEl}
-                              word={word}
-                              line={line}
-                              maxHeight={50}
-                              key={`wc-${word.id}-${imageVersion}`}
-                            />
-                          </div>
-                        )}
+                        {/* Handwriting crop via canvas */}
+                        <div className="bg-white">
+                          <WordCropCanvas
+                            imgEl={imgEl}
+                            word={word}
+                            line={line}
+                            maxHeight={50}
+                            key={`wc-${word.id}-${imageVersion}`}
+                          />
+                        </div>
 
                         {/* OCR text */}
-                        <div className={`w-full text-center px-3 py-2 text-base font-medium ${
-                          word.xLeft != null ? "border-t" : ""
-                        } ${
+                        <div className={`w-full text-center px-3 py-2 text-base font-medium border-t ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : ""
                         }`} dir="rtl">
@@ -823,22 +845,13 @@ export default function EditorPage() {
             <div className="max-w-5xl mx-auto flex items-center gap-3">
               {/* Handwriting crop preview */}
               <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px]">
-                {selectedWord.xLeft != null && selectedWord.xRight != null ? (
-                  <WordCropCanvas
-                    imgEl={imageRef.current}
-                    word={selectedWord}
-                    line={selectedLine}
-                    maxHeight={48}
-                    key={`ebc-${selectedWord.id}-${imageVersion}`}
-                  />
-                ) : (
-                  <LineCropCanvas
-                    imgEl={imageRef.current}
-                    line={selectedLine}
-                    maxHeight={48}
-                    key={`eblc-${selectedLine.id}-${imageVersion}`}
-                  />
-                )}
+                <WordCropCanvas
+                  imgEl={imageRef.current}
+                  word={selectedWord}
+                  line={selectedLine}
+                  maxHeight={48}
+                  key={`ebc-${selectedWord.id}-${imageVersion}`}
+                />
               </div>
 
               <div className="flex flex-col gap-1 shrink-0" dir="rtl">
