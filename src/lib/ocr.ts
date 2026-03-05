@@ -154,6 +154,68 @@ export interface FewShotLine {
   text: string;
 }
 
+/**
+ * OCR a single cropped line image.
+ * Returns the transcribed text for that line.
+ */
+async function ocrSingleLine(
+  lineCropBase64: string,
+  lineIndex: number,
+  totalLines: number,
+  correctionContext: string,
+  fewShotHint?: string,
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const systemPrompt =
+    "You read ONE line of handwritten Hebrew text from a cropped image strip. " +
+    "Output ONLY the Hebrew text you see — nothing else. No line numbers, no labels, no commentary.\n\n" +
+    "RULES:\n" +
+    "- Look at each letter shape individually. Read the INK, not what you think it should say.\n" +
+    "- Do NOT auto-complete from Torah, Talmud, Gemara, or any known text.\n" +
+    "- These are someone's personal notes. The text will NOT match any known source.\n" +
+    "- If you cannot read a letter, write [?]. Never guess.\n" +
+    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
+
+  let userText = `This is line ${lineIndex + 1} of ${totalLines} from a handwritten Hebrew page. Read exactly what is written.`;
+  if (fewShotHint) {
+    userText += `\n\nThe correct transcription for this line is known to be: ${fewShotHint}\nOutput this exact text.`;
+  }
+  if (correctionContext) {
+    userText += correctionContext;
+  }
+
+  const stream = client.messages.stream({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg" as ImageMediaType,
+              data: lineCropBase64,
+            },
+          },
+          { type: "text", text: userText },
+        ],
+      },
+    ],
+  });
+
+  const response = await stream.finalMessage();
+  const textBlock = response.content.find((b: { type: string }) => b.type === "text");
+  const text = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
+
+  return {
+    text,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  };
+}
+
 export async function runOCR(
   imageBase64: string,
   mediaType: string,
@@ -164,6 +226,8 @@ export async function runOCR(
   firstLineHint?: string,
   fewShotLines?: FewShotLine[]
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
+  const sharp = (await import("sharp")).default;
+
   // Detect line positions in the image
   const detectedLines = await detectLines(imageBuffer);
 
@@ -192,129 +256,112 @@ export async function runOCR(
 
       if (corrLines.length > 0) {
         correctionContext =
-          "\n\nKnown patterns for this handwriting (from human corrections):\n" +
+          "\n\nKnown patterns for this handwriting:\n" +
           corrLines.join("\n") +
           "\n";
       }
     }
   }
 
-  // Build few-shot context from verified lines
-  let fewShotContext = "";
-  if (fewShotLines && fewShotLines.length > 0) {
-    const sorted = [...fewShotLines].sort((a, b) => a.lineIndex - b.lineIndex);
-    fewShotContext =
-      "\n\nVERIFIED TRANSCRIPTIONS (these are 100% correct — use them to learn this writer's letter shapes):\n" +
-      sorted.map((l) => `Line ${l.lineIndex + 1}: ${l.text}`).join("\n") +
-      "\n\nStudy how the handwritten letters in those lines map to the transcribed text. " +
-      "Apply that knowledge to read the remaining lines accurately.\n";
+  // Build few-shot lookup from verified lines
+  const fewShotMap = new Map<number, string>();
+  if (fewShotLines) {
+    for (const l of fewShotLines) {
+      if (l.text.trim()) fewShotMap.set(l.lineIndex, l.text.trim());
+    }
+  }
+  // Legacy first-line hint
+  if (firstLineHint && !fewShotMap.has(0)) {
+    fewShotMap.set(0, firstLineHint);
   }
 
-  // Legacy first-line hint (still supported but few-shot is preferred)
-  let firstLineContext = "";
-  if (firstLineHint && (!fewShotLines || fewShotLines.length === 0)) {
-    firstLineContext =
-      `\nThe EXACT first line of this page is:\n${firstLineHint}\n` +
-      `Use this to understand how THIS writer forms each Hebrew letter. ` +
-      `Then read the rest of the page using that knowledge.\n`;
+  // Crop each line and OCR individually
+  // Process in batches of 3 for parallelism without overwhelming the API
+  const BATCH_SIZE = 3;
+  const lineResults: { text: string; inputTokens: number; outputTokens: number }[] = new Array(detectedLines.length);
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  for (let batchStart = 0; batchStart < detectedLines.length; batchStart += BATCH_SIZE) {
+    const batchEnd = Math.min(batchStart + BATCH_SIZE, detectedLines.length);
+    const batchPromises: Promise<void>[] = [];
+
+    for (let i = batchStart; i < batchEnd; i++) {
+      const line = detectedLines[i];
+      // Add padding around the line crop for context
+      const padTop = Math.floor((line.yBottom - line.yTop) * 0.15);
+      const padBottom = Math.floor((line.yBottom - line.yTop) * 0.15);
+
+      const cropPromise = (async () => {
+        const metadata = await sharp(imageBuffer).metadata();
+        const imgHeight = metadata.height || 1;
+        const yTop = Math.max(0, line.yTop - padTop);
+        const yBottom = Math.min(imgHeight, line.yBottom + padBottom);
+        const cropHeight = yBottom - yTop;
+        if (cropHeight < 5) {
+          lineResults[i] = { text: "[?]", inputTokens: 0, outputTokens: 0 };
+          return;
+        }
+
+        const cropBuffer = await sharp(imageBuffer)
+          .extract({ left: 0, top: yTop, width: metadata.width || 1, height: cropHeight })
+          .jpeg({ quality: 90 })
+          .toBuffer();
+
+        const cropBase64 = cropBuffer.toString("base64");
+        const hint = fewShotMap.get(i);
+
+        const result = await ocrSingleLine(
+          cropBase64, i, detectedLines.length, correctionContext, hint
+        );
+        lineResults[i] = result;
+      })();
+
+      batchPromises.push(cropPromise);
+    }
+
+    await Promise.all(batchPromises);
   }
 
-  const systemPrompt =
-    "You are a careful handwriting transcription tool. Your ONLY job is to read exactly " +
-    "what is written on the page — letter by letter, stroke by stroke. " +
-    "You must NEVER generate text from your knowledge of Torah, Talmud, or any other source. " +
-    "You are NOT a Torah scholar here. You are a camera that reads ink shapes.\n\n" +
-    "CRITICAL: If you recognize a phrase and your brain wants to auto-complete it, STOP. " +
-    "Look at each letter individually. The writer may have written something different " +
-    "from what you expect. Spell out ONLY what the ink shows.\n\n" +
-    "When in doubt, write [?]. A [?] is infinitely better than a hallucinated word. " +
-    "Getting 70% right with [?] for the rest is far more useful than getting 100% of " +
-    "confident-but-wrong text.";
-
-  const stream = client.messages.stream({
-    model: "claude-opus-4-20250514",
-    max_tokens: 16384,
-    thinking: {
-      type: "enabled",
-      budget_tokens: 10000,
-    },
-    system: systemPrompt,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mediaType as ImageMediaType,
-              data: imageBase64,
-            },
-          },
-          {
-            type: "text",
-            text:
-              `This page has exactly ${detectedLines.length} lines of handwritten Hebrew text.\n` +
-              firstLineContext +
-              fewShotContext +
-              correctionContext +
-              "\nTRANSCRIPTION RULES:\n" +
-              "1. Output EXACTLY " + detectedLines.length + " lines of text, one per line in the image.\n" +
-              "2. For EACH word: look at each letter shape individually. What does the INK show? " +
-              "Do NOT recognize the word — READ the letters one by one.\n" +
-              "3. These are someone's ORIGINAL notes (chiddushim). They are NOT copying a sefer. " +
-              "The text will NOT match any known source exactly.\n" +
-              "4. If a word looks like it could be two different words, write what the LETTERS show, not what makes more sense contextually.\n" +
-              "5. If you cannot read a letter or word, write [?]. Do NOT guess.\n" +
-              "6. Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, פ״ו, הל׳, דהיינו, א״כ, ד״ה\n" +
-              "7. Output ONLY the Hebrew text. No commentary, no line numbers, no labels.\n" +
-              "8. Each output line must correspond to one handwritten line in the image.\n" +
-              "9. NEVER auto-complete a pasuk, mishna, or gemara quote from memory. Read ONLY what is written." +
-              (fewShotLines && fewShotLines.length > 0
-                ? "\n10. For lines with verified transcriptions above, output the EXACT verified text."
-                : ""),
-          },
-        ],
-      },
-    ],
-  });
-
-  const response = await stream.finalMessage();
-
-  // Extract text from response (skip thinking blocks)
-  const textBlock = response.content.find((b: { type: string }) => b.type === "text");
-  const rawText = textBlock && "text" in textBlock ? textBlock.text : "";
+  // Sum up usage
+  for (const lr of lineResults) {
+    if (lr) {
+      totalInput += lr.inputTokens;
+      totalOutput += lr.outputTokens;
+    }
+  }
 
   // Track token usage
-  const modelId = "claude-opus-4-20250514";
-  const usage = response.usage;
-  const pricing = PRICING[modelId] || { input: 15, output: 75 };
+  const modelId = "claude-sonnet-4-20250514";
+  const pricing = PRICING[modelId] || { input: 3, output: 15 };
   const costCents =
-    (usage.input_tokens * pricing.input + usage.output_tokens * pricing.output) / 1_000_000 * 100;
+    (totalInput * pricing.input + totalOutput * pricing.output) / 1_000_000 * 100;
 
   await prisma.tokenUsage.create({
     data: {
       userId,
       fileId,
       model: modelId,
-      inputTokens: usage.input_tokens,
-      outputTokens: usage.output_tokens,
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
       costCents,
     },
   });
 
-  // Parse lines and match to detected positions
-  const textLines = rawText.split("\n").filter((l) => l.trim());
-  const lines: OCRLineResult[] = textLines.map((text, i) => {
-    const pos = detectedLines[i] || { yTop: 0, yBottom: 0 };
+  // Build results
+  const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
+    const text = lineResults[i]?.text || "[?]";
+    // Take only the first line of output in case model outputs multiple lines
+    const firstLine = text.split("\n")[0].trim();
     return {
       lineIndex: i,
       yTop: pos.yTop,
       yBottom: pos.yBottom,
-      text: text.trim(),
-      words: text.trim().split(/\s+/),
+      text: firstLine,
+      words: firstLine.split(/\s+/),
     };
   });
 
+  const rawText = lines.map((l) => l.text).join("\n");
   return { rawText, lines };
 }
