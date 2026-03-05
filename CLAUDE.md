@@ -77,6 +77,8 @@ Or use the `/deploy` skill which commits, pushes to GitHub, and deploys.
 - Must explicitly COPY `@supabase`, `sharp`, and `prisma` node_modules (standalone doesn't auto-include them)
 - Prisma db push runs at container startup using local binary (NOT npx, which pulls v7 and breaks)
 - `NEXT_PUBLIC_` vars must be set at build time
+- **Critical**: Server-side env vars (`SUPABASE_SERVICE_ROLE_KEY` etc.) get inlined by webpack at build time if accessed with dot notation (`process.env.KEY`). Use bracket notation (`process.env["KEY"]`) in modules to ensure runtime reading. The Supabase client in `src/lib/supabase.ts` uses a lazy Proxy pattern to guarantee env vars are read at request time, not module load time.
+- Health check endpoint at `/api/health` — configured on Railway for zero-downtime deploys
 
 ## Skills
 
