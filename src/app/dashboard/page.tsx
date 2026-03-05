@@ -326,12 +326,20 @@ export default function Dashboard() {
               className="p-4 flex justify-between items-center hover:bg-gray-50 cursor-pointer"
               onClick={() => router.push(`/editor/${file.id}`)}
             >
-              <div>
-                <p className="font-medium">{file.filename}</p>
-                <p className="text-sm text-gray-400">
-                  {file.profile?.name || "No profile"} &middot;{" "}
-                  {new Date(file.createdAt).toLocaleDateString()}
-                </p>
+              <div className="flex items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/api/files/${file.id}/image`}
+                  alt={file.filename}
+                  className="w-16 h-16 object-cover rounded border border-gray-200"
+                />
+                <div>
+                  <p className="font-medium">{file.filename}</p>
+                  <p className="text-sm text-gray-400">
+                    {file.profile?.name || "No profile"} &middot;{" "}
+                    {new Date(file.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <span
