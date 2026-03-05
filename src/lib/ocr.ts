@@ -330,33 +330,40 @@ async function ocrFullPage(
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
-  // Try Opus first (best quality), fall back to Sonnet on persistent failure
-  const models = ["claude-opus-4-20250514", "claude-sonnet-4-20250514"];
+  // Try Opus first (best quality), fall back to Sonnet quickly on failure
+  const models: { id: string; retries: number; delay: number }[] = [
+    { id: "claude-opus-4-20250514", retries: 2, delay: 3000 },
+    { id: "claude-sonnet-4-20250514", retries: 3, delay: 2000 },
+  ];
   let response: Anthropic.Message | null = null;
-  let usedModel = models[0];
+  let usedModel = models[0].id;
 
-  for (const model of models) {
+  for (const { id: model, retries, delay } of models) {
     usedModel = model;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      const t0 = Date.now();
       try {
+        console.log(`[OCR] Trying ${model} (attempt ${attempt + 1}/${retries})...`);
         response = await client.messages.create({
           model,
           max_tokens: 4096,
           system: systemPrompt,
           messages,
         });
+        console.log(`[OCR] ${model} succeeded in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
         break;
       } catch (err: unknown) {
         const status = (err as { status?: number }).status;
+        console.log(`[OCR] ${model} failed: ${status} after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
         if (status === 529 || status === 503 || status === 502) {
-          // Wait longer between retries: 3s, 6s, 10s, then try next model
-          await new Promise(r => setTimeout(r, 3000 + attempt * 3000));
+          if (attempt < retries - 1) await new Promise(r => setTimeout(r, delay));
           continue;
         }
         throw err;
       }
     }
-    if (response) break; // Got a response, stop trying models
+    if (response) break;
+    console.log(`[OCR] ${model} exhausted retries, trying next model...`);
   }
   if (!response) throw new Error("API overloaded — please try again in a minute");
 
