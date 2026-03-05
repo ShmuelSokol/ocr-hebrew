@@ -1,0 +1,36 @@
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+export async function GET() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const userId = (session.user as { id: string }).id;
+
+  const records = await prisma.tokenUsage.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const totalInput = records.reduce((sum, r) => sum + r.inputTokens, 0);
+  const totalOutput = records.reduce((sum, r) => sum + r.outputTokens, 0);
+  const totalCostCents = records.reduce((sum, r) => sum + r.costCents, 0);
+
+  return NextResponse.json({
+    totalInput,
+    totalOutput,
+    totalTokens: totalInput + totalOutput,
+    totalCostCents,
+    totalCostDollars: (totalCostCents / 100).toFixed(2),
+    requestCount: records.length,
+    recent: records.slice(0, 10).map((r) => ({
+      model: r.model,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      costCents: r.costCents.toFixed(2),
+      createdAt: r.createdAt,
+    })),
+  });
+}

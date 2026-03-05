@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime @default(now())
+  files        File[]
+  profiles     HandwritingProfile[]
+  tokenUsage   TokenUsage[]
+}
+
+model HandwritingProfile {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  files       File[]
+  corrections Correction[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model File {
+  id          String   @id @default(cuid())
+  filename    String
+  storagePath String
+  status      String   @default("pending")
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  profileId   String?
+  profile     HandwritingProfile? @relation(fields: [profileId], references: [id])
+  ocrResult   OCRResult?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model OCRResult {
+  id          String   @id @default(cuid())
+  fileId      String   @unique
+  file        File     @relation(fields: [fileId], references: [id])
+  rawText     String
+  lines       OCRLine[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model OCRLine {
+  id          String   @id @default(cuid())
+  resultId    String
+  result      OCRResult @relation(fields: [resultId], references: [id])
+  lineIndex   Int
+  yTop        Int
+  yBottom     Int
+  rawText     String
+  correctedText String?
+  words       OCRWord[]
+}
+
+model OCRWord {
+  id          String   @id @default(cuid())
+  lineId      String
+  line        OCRLine  @relation(fields: [lineId], references: [id])
+  wordIndex   Int
+  rawText     String
+  correctedText String?
+  confidence  Float?
+  xLeft       Int?
+  xRight      Int?
+}
+
+model TokenUsage {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  fileId        String?
+  model         String
+  inputTokens   Int
+  outputTokens  Int
+  costCents     Float
+  createdAt     DateTime @default(now())
+}
+
+model Correction {
+  id          String   @id @default(cuid())
+  profileId   String
+  profile     HandwritingProfile @relation(fields: [profileId], references: [id])
+  originalText String
+  correctedText String
+  imageSnippet String?
+  createdAt   DateTime @default(now())
+}

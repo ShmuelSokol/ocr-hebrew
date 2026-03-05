@@ -9,18 +9,28 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@prisma/client": "^5.22.0",
+    "anthropic": "^0.0.0",
+    "bcryptjs": "^3.0.3",
+    "formidable": "^3.5.4",
+    "next": "14.2.35",
+    "next-auth": "^4.24.13",
     "react": "^18",
     "react-dom": "^18",
-    "next": "14.2.35"
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/formidable": "^3.5.0",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "postcss": "^8",
-    "tailwindcss": "^3.4.1",
     "eslint": "^8",
-    "eslint-config-next": "14.2.35"
+    "eslint-config-next": "14.2.35",
+    "postcss": "^8",
+    "prisma": "^5.22.0",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
   }
 }

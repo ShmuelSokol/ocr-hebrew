@@ -28,9 +28,13 @@ yarn-error.log*
 # local env files
 .env*.local
 
+# uploads
+uploads/
+
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+prisma/dev.db
