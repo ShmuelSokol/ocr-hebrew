@@ -33,6 +33,37 @@ interface DetectedLine {
   yBottom: number;
 }
 
+// Canvas-based word crop — uses real coordinates from Opus
+function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
+  imgEl: HTMLImageElement | null;
+  word: Word;
+  line: Line;
+  maxHeight?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
+    if (word.xLeft == null || word.xRight == null) return;
+
+    const srcW = word.xRight - word.xLeft;
+    const srcH = line.yBottom - line.yTop;
+    if (srcW <= 0 || srcH <= 0) return;
+
+    const scale = Math.min(2, maxHeight / srcH);
+    canvas.width = Math.max(20, Math.round(srcW * scale));
+    canvas.height = Math.max(15, Math.round(srcH * scale));
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(imgEl, word.xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
+  }, [imgEl, word.xLeft, word.xRight, line.yTop, line.yBottom, maxHeight]);
+
+  if (word.xLeft == null || word.xRight == null) return null;
+  return <canvas ref={canvasRef} className="block" />;
+}
+
 // Canvas-based line crop
 function LineCropCanvas({ imgEl, line, maxHeight = 80 }: {
   imgEl: HTMLImageElement | null;
@@ -472,8 +503,15 @@ export default function EditorPage() {
                           "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
                         }`}
                       >
-                        {/* OCR text — line image is shown above the word row */}
-                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${
+                        {/* Word handwriting crop */}
+                        {word.xLeft != null && word.xRight != null && (
+                          <div className="bg-white">
+                            <WordCropCanvas imgEl={imgEl} word={word} line={line} maxHeight={50} key={`wc-${word.id}-${imageVersion}`} />
+                          </div>
+                        )}
+
+                        {/* OCR text */}
+                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${word.xLeft != null ? "border-t" : ""} ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : ""
                         }`} dir="rtl">
@@ -512,9 +550,13 @@ export default function EditorPage() {
           <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(currentWordNum / totalWords) * 100}%` }} />
         </div>
 
-        {/* Line handwriting image */}
-        <div className="border rounded-xl overflow-hidden bg-white">
-          <LineCropCanvas imgEl={imgEl} line={reviewLine} maxHeight={100} key={`rlc-${reviewLine.id}-${imageVersion}`} />
+        {/* Word handwriting crop (large) or line if no coords */}
+        <div className="flex justify-center border rounded-xl overflow-hidden bg-white p-2">
+          {reviewWord.xLeft != null && reviewWord.xRight != null ? (
+            <WordCropCanvas imgEl={imgEl} word={reviewWord} line={reviewLine} maxHeight={100} key={`rwc-${reviewWord.id}-${imageVersion}`} />
+          ) : (
+            <LineCropCanvas imgEl={imgEl} line={reviewLine} maxHeight={100} key={`rlc-${reviewLine.id}-${imageVersion}`} />
+          )}
         </div>
 
         {/* Focused word text */}
@@ -786,12 +828,11 @@ export default function EditorPage() {
               {/* Top row on mobile: crop + OCR text */}
               <div className="flex items-center gap-2 sm:gap-3">
                 <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px] sm:max-w-[300px]">
-                  <LineCropCanvas
-                    imgEl={imageRef.current}
-                    line={selectedLine}
-                    maxHeight={48}
-                    key={`eblc-${selectedLine.id}-${imageVersion}`}
-                  />
+                  {selectedWord.xLeft != null && selectedWord.xRight != null ? (
+                    <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${imageVersion}`} />
+                  ) : (
+                    <LineCropCanvas imgEl={imageRef.current} line={selectedLine} maxHeight={48} key={`eblc-${selectedLine.id}-${imageVersion}`} />
+                  )}
                 </div>
                 <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
                   <span className="text-base font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>

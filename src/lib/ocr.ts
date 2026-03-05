@@ -258,49 +258,63 @@ interface TrainingImage {
   text: string;
 }
 
-// Send the full page image to Opus and get all lines transcribed at once.
-// This gives the model full context and is more accurate than per-line crops.
+interface OCRPageWord {
+  text: string;
+  xLeft: number;
+  xRight: number;
+}
+
+interface OCRPageLine {
+  text: string;
+  words: OCRPageWord[];
+}
+
+// Send the full page image to Opus and get word-level bounding boxes back.
 async function ocrFullPage(
   imageBase64: string,
   mediaType: string,
-  lineCount: number,
+  imageWidth: number,
+  imageHeight: number,
+  detectedLines: { yTop: number; yBottom: number }[],
   trainingExamples: TrainingImage[],
   fewShotHints: Map<number, string>,
-): Promise<{ lines: string[]; inputTokens: number; outputTokens: number }> {
+): Promise<{ lines: OCRPageLine[]; inputTokens: number; outputTokens: number }> {
+  const lineCount = detectedLines.length;
+
+  const lineRanges = detectedLines.map((l, i) => `Line ${i + 1}: y=${l.yTop}..${l.yBottom}`).join("\n");
+
   const systemPrompt =
-    "You are a Hebrew handwriting OCR. You receive a full page of handwritten Hebrew text.\n" +
-    "The page has been analyzed and contains " + lineCount + " lines of text.\n\n" +
-    "Output EXACTLY " + lineCount + " lines, one per line, in order from top to bottom.\n" +
-    "Each line should contain ONLY the Hebrew characters, spaces, and punctuation for that line.\n" +
-    "NEVER output English. NEVER describe the image. NEVER explain anything.\n" +
-    "If a line is blank or unreadable, output: [?]\n\n" +
-    "Rules:\n" +
-    "- Read each letter shape carefully from the actual ink strokes. Do not guess from context.\n" +
-    "- Do not auto-complete from Torah, Talmud, or any known text.\n" +
-    "- These are personal notes — text won't match any known source.\n" +
-    "- Use [?] for any letter you genuinely cannot read.\n" +
-    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה\n" +
-    "- Output exactly " + lineCount + " lines — no more, no less.";
+    `You are a Hebrew handwriting OCR. The image is ${imageWidth}x${imageHeight} pixels.\n` +
+    `Line detection found ${lineCount} text lines at these y-ranges:\n${lineRanges}\n\n` +
+    "For each line, identify every word and its horizontal pixel position.\n" +
+    "Output valid JSON only — no markdown, no explanation, no extra text.\n\n" +
+    "Output format (JSON array with exactly " + lineCount + " elements):\n" +
+    '[{"words":[{"text":"word","x1":rightEdgePx,"x2":leftEdgePx},...]},...]\n\n' +
+    "IMPORTANT:\n" +
+    "- Hebrew is RTL: the FIRST word in reading order is on the RIGHT side of the image (high x values).\n" +
+    "- x1 = right edge of the word (higher x), x2 = left edge of the word (lower x).\n" +
+    "- Words should be in Hebrew reading order (right to left).\n" +
+    "- x values are pixel coordinates (0 = left edge, " + imageWidth + " = right edge).\n" +
+    "- Read each letter from the actual ink. Do not guess from context or known texts.\n" +
+    "- These are personal study notes — text won't match any known source.\n" +
+    "- Use [?] for unreadable letters. Use {\"words\":[{\"text\":\"[?]\",\"x1\":" + imageWidth + ",\"x2\":0}]} for blank lines.\n" +
+    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
 
   const content: Anthropic.MessageCreateParams["messages"][0]["content"] = [];
 
-  // Training examples first
+  // Training examples
   if (trainingExamples.length > 0) {
     content.push({
       type: "text",
-      text: `Here are ${trainingExamples.length} reference examples of this writer's handwriting. Study how they form each letter:`,
+      text: `Reference examples of this writer's handwriting — study the letter shapes:`,
     });
-
     for (let i = 0; i < trainingExamples.length; i++) {
       const ex = trainingExamples[i];
       content.push({
         type: "image",
         source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
       });
-      content.push({
-        type: "text",
-        text: `Reference ${i + 1}: ${ex.text}`,
-      });
+      content.push({ type: "text", text: `Reference ${i + 1}: ${ex.text}` });
     }
   }
 
@@ -310,49 +324,77 @@ async function ocrFullPage(
     source: { type: "base64", media_type: mediaType as ImageMediaType, data: imageBase64 },
   });
 
-  // Build instruction with any known lines as hints
-  let instruction = `Transcribe all ${lineCount} lines of handwritten Hebrew from the page image above. Output exactly ${lineCount} lines.`;
+  // Instruction
+  let instruction = `Transcribe all ${lineCount} lines with word positions. Output JSON only.`;
   if (fewShotHints.size > 0) {
-    instruction += "\n\nSome lines are already known (use them exactly as given):";
+    instruction += "\n\nKnown lines (use exact text, still provide x positions):";
     const sorted = Array.from(fewShotHints.entries()).sort((a, b) => a[0] - b[0]);
     for (const [idx, text] of sorted) {
       instruction += `\nLine ${idx + 1}: ${text}`;
     }
-    instruction += "\n\nTranscribe the remaining lines by reading the handwriting. Output ALL lines including the known ones.";
   }
   content.push({ type: "text", text: instruction });
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
-  const stream = client.messages.stream({
+  const response = await client.messages.create({
     model: "claude-opus-4-20250514",
-    max_tokens: 4096,
+    max_tokens: 8192,
     system: systemPrompt,
     messages,
   });
 
-  const response = await stream.finalMessage();
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
-  const rawText = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
+  let rawText = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "[]";
 
-  // Split into lines and filter out empty lines at the edges
-  let lines = rawText.split("\n").map(l => l.trim());
+  // Strip markdown code fences if present
+  rawText = rawText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/, "").trim();
 
-  // Remove line number prefixes like "1. " or "1: " or "Line 1: " if the model added them
-  lines = lines.map(l => l.replace(/^(?:Line\s*)?\d+[\.:)\-]\s*/, ""));
+  // Parse JSON
+  let parsed: { words: { text: string; x1: number; x2: number }[] }[];
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    // Fallback: try to extract JSON array from the response
+    const match = rawText.match(/\[[\s\S]*\]/);
+    if (match) {
+      try { parsed = JSON.parse(match[0]); } catch { parsed = []; }
+    } else {
+      parsed = [];
+    }
+  }
 
-  // Strip entirely-English lines
-  lines = lines.map(l => {
-    if (/[a-zA-Z]{3,}/.test(l) && !/[\u0590-\u05FF]/.test(l)) return "[?]";
-    return l;
+  // Normalize into our format
+  const lines: OCRPageLine[] = detectedLines.map((_, i) => {
+    const lineData = parsed[i];
+    if (!lineData || !lineData.words || !Array.isArray(lineData.words)) {
+      return { text: "[?]", words: [{ text: "[?]", xLeft: 0, xRight: imageWidth }] };
+    }
+
+    const words: OCRPageWord[] = lineData.words
+      .filter((w: { text?: string }) => w.text && w.text.trim())
+      .map((w: { text: string; x1: number; x2: number }) => ({
+        text: w.text.trim(),
+        // x1 = right edge (higher), x2 = left edge (lower)
+        xLeft: Math.max(0, Math.min(w.x1, w.x2)),
+        xRight: Math.min(imageWidth, Math.max(w.x1, w.x2)),
+      }));
+
+    if (words.length === 0) {
+      return { text: "[?]", words: [{ text: "[?]", xLeft: 0, xRight: imageWidth }] };
+    }
+
+    const text = words.map((w: OCRPageWord) => w.text).join(" ");
+    return { text, words };
   });
 
-  // Pad or trim to match expected line count
-  while (lines.length < lineCount) lines.push("[?]");
-  if (lines.length > lineCount) lines = lines.slice(0, lineCount);
+  // Pad if needed
+  while (lines.length < lineCount) {
+    lines.push({ text: "[?]", words: [{ text: "[?]", xLeft: 0, xRight: imageWidth }] });
+  }
 
   return {
-    lines,
+    lines: lines.slice(0, lineCount),
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
   };
@@ -370,6 +412,11 @@ export async function runOCR(
   firstLineHint?: string,
   fewShotLines?: FewShotLine[]
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
+  const sharp = (await import("sharp")).default;
+  const metadata = await sharp(imageBuffer).metadata();
+  const imageWidth = metadata.width || 1;
+  const imageHeight = metadata.height || 1;
+
   // Detect line positions
   const detectedLines = await detectLines(imageBuffer);
 
@@ -408,11 +455,13 @@ export async function runOCR(
     fewShotMap.set(0, firstLineHint);
   }
 
-  // OCR the full page in one call (Opus, full context)
+  // OCR the full page in one call (Opus, full context, word bounding boxes)
   const ocrResult = await ocrFullPage(
     imageBase64,
     mediaType,
-    detectedLines.length,
+    imageWidth,
+    imageHeight,
+    detectedLines,
     trainingExamples,
     fewShotMap,
   );
@@ -437,16 +486,20 @@ export async function runOCR(
     },
   });
 
-  // Build results — words are text splits from the OCR output
+  // Build results using word coordinates from Opus
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
-    const text = ocrResult.lines[i] || "[?]";
-    const wordTexts = text.split(/\s+/).filter(w => w.length > 0);
+    const lineData = ocrResult.lines[i];
+    const text = lineData?.text || "[?]";
 
-    const words: OCRWordResult[] = wordTexts.map((wt) => ({
-      text: wt,
-      xLeft: null,
-      xRight: null,
+    const words: OCRWordResult[] = (lineData?.words || []).map((w) => ({
+      text: w.text,
+      xLeft: w.xLeft,
+      xRight: w.xRight,
     }));
+
+    if (words.length === 0) {
+      words.push({ text: "[?]", xLeft: null, xRight: null });
+    }
 
     return {
       lineIndex: i,
