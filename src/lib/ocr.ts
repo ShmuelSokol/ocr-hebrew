@@ -269,9 +269,9 @@ async function ocrFullPage(
 ): Promise<{ lines: string[]; model: string; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
     "You are an expert Hebrew handwriting OCR specializing in Torah/Talmud study notes.\n\n" +
-    "The image contains " + lineCount + " lines of handwritten Hebrew/Aramaic text.\n" +
-    "These are personal study notes on Talmud, Halacha, and related topics.\n\n" +
-    "Output EXACTLY " + lineCount + " lines of text, one per line, top to bottom.\n" +
+    "These are personal study notes on Talmud, Halacha, and related topics.\n" +
+    "Output one line of text for EVERY line of handwriting you see, top to bottom.\n" +
+    "Include headers like בס״ד as their own line. Include every line, even short ones.\n" +
     "Output ONLY the transcribed text. No English. No explanations. No line numbers.\n\n" +
     "Guidelines:\n" +
     "- Read the actual handwriting carefully — every word must correspond to visible ink.\n" +
@@ -317,7 +317,7 @@ async function ocrFullPage(
   });
 
   // Instruction
-  let instruction = `Transcribe all ${lineCount} lines of handwritten text from the image above.\nOutput EXACTLY ${lineCount} lines of Hebrew/Aramaic text, nothing else.`;
+  let instruction = `Transcribe every line of handwritten text from the image above (approximately ${lineCount} lines).\nOutput one line per handwritten line, including any header like בס"ד. Output Hebrew/Aramaic text only.`;
   if (fewShotHints.size > 0) {
     instruction += "\n\nThese lines have been verified (use exact text):";
     const sorted = Array.from(fewShotHints.entries()).sort((a, b) => a[0] - b[0]);
@@ -374,10 +374,6 @@ async function ocrFullPage(
     if (/[a-zA-Z]{3,}/.test(l) && !/[\u0590-\u05FF]/.test(l)) return "[?]";
     return l;
   });
-
-  // Pad or trim to expected count
-  while (lines.length < lineCount) lines.push("[?]");
-  if (lines.length > lineCount) lines = lines.slice(0, lineCount);
 
   return {
     lines,
@@ -485,9 +481,71 @@ export async function runOCR(
     },
   });
 
+  // Align OCR output lines to detected physical lines.
+  // The OCR may skip short header lines (like "בס"ד") or ignore noise at the bottom,
+  // producing fewer lines than detected. We align by figuring out which detected
+  // lines the OCR skipped and inserting [?] placeholders there.
+  let alignedTexts: string[] = ocrResult.lines;
+  const detected = detectedLines.length;
+  const produced = alignedTexts.length;
+
+  if (produced < detected) {
+    const heights = detectedLines.map(l => l.yBottom - l.yTop);
+    const medianHeight = heights.slice().sort((a, b) => a - b)[Math.floor(heights.length / 2)];
+    const insertPositions = new Set<number>();
+    let needed = detected - produced;
+
+    // 1. Check for header lines at the top: small or isolated from the content bulk
+    if (needed > 0 && detected > 1) {
+      const gapAfterFirst = detectedLines[1].yTop - detectedLines[0].yBottom;
+      if (gapAfterFirst > medianHeight * 2) {
+        insertPositions.add(0);
+        needed--;
+      }
+    }
+
+    // 2. Check for noise at the bottom: unusually tall lines or huge gap before
+    if (needed > 0 && detected > 1) {
+      const lastIdx = detected - 1;
+      const lastHeight = heights[lastIdx];
+      const gapBeforeLast = detectedLines[lastIdx].yTop - detectedLines[lastIdx - 1].yBottom;
+      if (lastHeight > medianHeight * 2.5 || gapBeforeLast > medianHeight * 5) {
+        insertPositions.add(lastIdx);
+        needed--;
+      }
+    }
+
+    // 3. For any remaining, insert [?] at the end
+    for (let i = detected - 1; i >= 0 && needed > 0; i--) {
+      if (!insertPositions.has(i)) {
+        insertPositions.add(i);
+        needed--;
+      }
+    }
+
+    // Build aligned array
+    const result: string[] = [];
+    let ocrIdx = 0;
+    for (let i = 0; i < detected; i++) {
+      if (insertPositions.has(i)) {
+        result.push("[?]");
+      } else {
+        result.push(alignedTexts[ocrIdx] || "[?]");
+        ocrIdx++;
+      }
+    }
+    alignedTexts = result;
+  } else if (produced > detected) {
+    // OCR produced more lines — trim from the end
+    alignedTexts = alignedTexts.slice(0, detected);
+  }
+
+  // Pad if still short
+  while (alignedTexts.length < detected) alignedTexts.push("[?]");
+
   // Build results — words are text splits from OCR output
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
-    const text = ocrResult.lines[i] || "[?]";
+    const text = alignedTexts[i] || "[?]";
     const wordTexts = text.split(/\s+/).filter(w => w.length > 0);
 
     const words: OCRWordResult[] = wordTexts.length > 0
