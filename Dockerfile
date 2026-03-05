@@ -41,4 +41,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD npx prisma db push --skip-generate && node server.js
+CMD npx prisma db push && node server.js
