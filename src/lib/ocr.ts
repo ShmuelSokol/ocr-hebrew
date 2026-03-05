@@ -61,6 +61,11 @@ const PRICING: Record<string, { input: number; output: number }> = {
   "claude-sonnet-4-20250514": { input: 3, output: 15 },
 };
 
+export interface FewShotLine {
+  lineIndex: number;
+  text: string;
+}
+
 export async function runOCR(
   imageBase64: string,
   mediaType: string,
@@ -68,7 +73,8 @@ export async function runOCR(
   userId: string,
   fileId: string,
   profileId?: string,
-  firstLineHint?: string
+  firstLineHint?: string,
+  fewShotLines?: FewShotLine[]
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
   // Detect line positions in the image
   const detectedLines = await detectLines(imageBuffer);
@@ -80,37 +86,45 @@ export async function runOCR(
       where: { profileId },
     });
     if (corrections.length > 0) {
-      // Group corrections: count how many times each pair appears
       const pairCounts = new Map<string, number>();
       for (const c of corrections) {
         const key = `${c.originalText}|||${c.correctedText}`;
         pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
       }
 
-      // Build context with frequency — more examples = higher confidence
-      const lines: string[] = [];
+      const corrLines: string[] = [];
       pairCounts.forEach((count, key) => {
         const [orig, corrected] = key.split("|||");
         if (orig === corrected) {
-          // Confirmed correct word
-          if (count >= 2) lines.push(`"${orig}" is confirmed correct (seen ${count}x)`);
+          if (count >= 2) corrLines.push(`"${orig}" is confirmed correct (seen ${count}x)`);
         } else {
-          // Actual correction
-          lines.push(`"${orig}" should be "${corrected}" (corrected ${count}x)`);
+          corrLines.push(`"${orig}" should be "${corrected}" (corrected ${count}x)`);
         }
       });
 
-      if (lines.length > 0) {
+      if (corrLines.length > 0) {
         correctionContext =
           "\n\nKnown patterns for this handwriting (from human corrections):\n" +
-          lines.join("\n") +
+          corrLines.join("\n") +
           "\n";
       }
     }
   }
 
+  // Build few-shot context from verified lines
+  let fewShotContext = "";
+  if (fewShotLines && fewShotLines.length > 0) {
+    const sorted = [...fewShotLines].sort((a, b) => a.lineIndex - b.lineIndex);
+    fewShotContext =
+      "\n\nVERIFIED TRANSCRIPTIONS (these are 100% correct — use them to learn this writer's letter shapes):\n" +
+      sorted.map((l) => `Line ${l.lineIndex + 1}: ${l.text}`).join("\n") +
+      "\n\nStudy how the handwritten letters in those lines map to the transcribed text. " +
+      "Apply that knowledge to read the remaining lines accurately.\n";
+  }
+
+  // Legacy first-line hint (still supported but few-shot is preferred)
   let firstLineContext = "";
-  if (firstLineHint) {
+  if (firstLineHint && (!fewShotLines || fewShotLines.length === 0)) {
     firstLineContext =
       `\nThe EXACT first line of this page is:\n${firstLineHint}\n` +
       `Use this to understand how THIS writer forms each Hebrew letter. ` +
@@ -137,6 +151,7 @@ export async function runOCR(
             text:
               `This page has exactly ${detectedLines.length} lines of handwritten Hebrew text.\n` +
               firstLineContext +
+              fewShotContext +
               correctionContext +
               "\nTRANSCRIPTION RULES:\n" +
               "1. Output EXACTLY " + detectedLines.length + " lines of text, one per line in the image.\n" +
@@ -146,7 +161,10 @@ export async function runOCR(
               "5. If you cannot read a word, write [?] — this is MUCH better than guessing.\n" +
               "6. Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, פ״ו, הל׳, דהיינו, א״כ, ד״ה\n" +
               "7. Output ONLY the Hebrew text. No commentary, no line numbers, no labels.\n" +
-              "8. Each output line must correspond to one handwritten line in the image.",
+              "8. Each output line must correspond to one handwritten line in the image." +
+              (fewShotLines && fewShotLines.length > 0
+                ? "\n9. For lines with verified transcriptions above, output the EXACT verified text."
+                : ""),
           },
         ],
       },

@@ -26,6 +26,13 @@ interface OCRResult {
   lines: Line[];
 }
 
+interface DetectedLine {
+  yTop: number;
+  yBottom: number;
+}
+
+const RERUN_THRESHOLD = 5;
+
 export default function EditorPage() {
   const { status } = useSession();
   const router = useRouter();
@@ -35,7 +42,6 @@ export default function EditorPage() {
   const [result, setResult] = useState<OCRResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
-  const [firstLineHint, setFirstLineHint] = useState("");
   const [editingWord, setEditingWord] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [filename, setFilename] = useState("");
@@ -44,6 +50,14 @@ export default function EditorPage() {
   const [imageDisplayWidth, setImageDisplayWidth] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [showOverlay, setShowOverlay] = useState(true);
+  const [correctionCount, setCorrectionCount] = useState(0);
+  const [showRerunBanner, setShowRerunBanner] = useState(false);
+  // Training mode
+  const [trainingMode, setTrainingMode] = useState(false);
+  const [detectedLines, setDetectedLines] = useState<DetectedLine[]>([]);
+  const [trainingTexts, setTrainingTexts] = useState<Record<number, string>>({});
+  const [detectingLines, setDetectingLines] = useState(false);
+
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -61,7 +75,19 @@ export default function EditorPage() {
       setFilename(file.filename);
       setFileStatus(file.status);
     }
-    if (resultData?.id) setResult(resultData);
+    if (resultData?.id) {
+      setResult(resultData);
+      // Count how many words have been manually corrected (different from raw)
+      const corrected = resultData.lines.reduce(
+        (sum: number, line: Line) =>
+          sum +
+          line.words.filter(
+            (w: Word) => w.correctedText && w.correctedText !== w.rawText
+          ).length,
+        0
+      );
+      setCorrectionCount(corrected);
+    }
     setLoading(false);
   }, [fileId]);
 
@@ -88,11 +114,29 @@ export default function EditorPage() {
     };
   }, [ocrRunning]);
 
+  // Show re-run banner when correction threshold is reached
+  useEffect(() => {
+    if (correctionCount >= RERUN_THRESHOLD && result) {
+      setShowRerunBanner(true);
+    }
+  }, [correctionCount, result]);
+
   function onImageLoad() {
     if (imageRef.current) {
       setImageNaturalHeight(imageRef.current.naturalHeight);
       setImageDisplayWidth(imageRef.current.clientWidth);
     }
+  }
+
+  async function startTrainingMode() {
+    setDetectingLines(true);
+    const res = await fetch(`/api/files/${fileId}/detect-lines`, { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      setDetectedLines(data.lines);
+      setTrainingMode(true);
+    }
+    setDetectingLines(false);
   }
 
   async function confirmLine(lineId: string) {
@@ -111,14 +155,49 @@ export default function EditorPage() {
     await loadResult();
   }
 
+  function buildFewShotLines(): { lineIndex: number; text: string }[] {
+    const lines: { lineIndex: number; text: string }[] = [];
+
+    // Add training-mode lines (user typed before first OCR)
+    for (const [idx, text] of Object.entries(trainingTexts)) {
+      if (text.trim()) {
+        lines.push({ lineIndex: parseInt(idx), text: text.trim() });
+      }
+    }
+
+    // Add corrected lines from previous OCR result (for re-runs)
+    if (result) {
+      for (const line of result.lines) {
+        const alreadyAdded = lines.some((l) => l.lineIndex === line.lineIndex);
+        if (alreadyAdded) continue;
+        // Include lines where all words have been confirmed/corrected
+        const allConfirmed = line.words.every((w) => w.correctedText);
+        if (allConfirmed) {
+          const correctedText = line.words
+            .map((w) => w.correctedText || w.rawText)
+            .join(" ");
+          lines.push({ lineIndex: line.lineIndex, text: correctedText });
+        }
+      }
+    }
+
+    return lines;
+  }
+
   async function runOCR() {
     setOcrRunning(true);
+    setShowRerunBanner(false);
+    const fewShotLines = buildFewShotLines();
     const res = await fetch(`/api/files/${fileId}/ocr`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ firstLineHint: firstLineHint || undefined }),
+      body: JSON.stringify({
+        fewShotLines: fewShotLines.length > 0 ? fewShotLines : undefined,
+      }),
     });
     if (res.ok) {
+      setTrainingMode(false);
+      setCorrectionCount(0);
       await loadResult();
     } else {
       const err = await res.json();
@@ -133,11 +212,8 @@ export default function EditorPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contrast: 1.3, brightness: 10, sharpen: true, grayscale: true }),
     });
-    if (res.ok) {
-      // Force image reload
-      if (imageRef.current) {
-        imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
-      }
+    if (res.ok && imageRef.current) {
+      imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
     }
   }
 
@@ -156,110 +232,161 @@ export default function EditorPage() {
     setEditValue(word.correctedText || word.rawText);
   }
 
+  const trainingLineCount = Object.values(trainingTexts).filter((t) => t.trim()).length;
+
+  // Render training mode: detected lines overlaid on image with text inputs
+  function renderTraining() {
+    if (!detectedLines.length || !imageNaturalHeight) return null;
+
+    return (
+      <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`/api/files/${fileId}/image`}
+          alt="Original"
+          className="w-full block"
+        />
+        {detectedLines.map((line, i) => (
+          <div
+            key={`train-${i}`}
+            className="absolute left-0 right-0 flex items-center gap-1 px-2"
+            dir="rtl"
+            style={{
+              top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+              minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+            }}
+          >
+            <span className="text-xs bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center shrink-0">
+              {i + 1}
+            </span>
+            <input
+              type="text"
+              dir="rtl"
+              placeholder={i < 3 ? "Type this line..." : ""}
+              value={trainingTexts[i] || ""}
+              onChange={(e) =>
+                setTrainingTexts((prev) => ({ ...prev, [i]: e.target.value }))
+              }
+              className={`flex-1 border rounded px-2 py-1 text-sm text-right ${
+                trainingTexts[i]?.trim()
+                  ? "bg-green-50/90 border-green-400"
+                  : "bg-white/80 border-gray-300"
+              }`}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   // Render OCR text overlayed directly on the image
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
 
     return (
       <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
-        {/* Full image as background */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={`/api/files/${fileId}/image`}
           alt="Original"
           className="w-full block"
-          style={{ display: "block" }}
         />
-        {/* Overlay text lines on top of the image */}
-        {showOverlay && result.lines.map((line) => {
-          const allConfirmed = line.words.every((w) => w.correctedText);
-          return (
-            <div
-              key={`text-${line.id}`}
-              className={`absolute left-0 right-0 px-2 py-1 flex items-center gap-1 ${
-                allConfirmed
-                  ? "bg-green-50/80 border-y border-green-300"
-                  : "bg-yellow-50/80 border-y border-yellow-300"
-              }`}
-              dir="rtl"
-              style={{
-                top: `${(line.yTop / imageNaturalHeight) * 100}%`,
-                minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
-              }}
-            >
-              <div className="flex flex-wrap gap-1 text-sm leading-snug flex-1">
-                {line.words.map((word) => {
-                  const isCorrected =
-                    word.correctedText && word.correctedText !== word.rawText;
-                  const isEditing = editingWord === word.id;
-                  const displayText = word.correctedText || word.rawText;
+        {showOverlay &&
+          result.lines.map((line) => {
+            const allConfirmed = line.words.every((w) => w.correctedText);
+            return (
+              <div
+                key={`text-${line.id}`}
+                className={`absolute left-0 right-0 px-2 py-1 flex items-center gap-1 ${
+                  allConfirmed
+                    ? "bg-green-50/80 border-y border-green-300"
+                    : "bg-yellow-50/80 border-y border-yellow-300"
+                }`}
+                dir="rtl"
+                style={{
+                  top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+                  minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+                }}
+              >
+                <div className="flex flex-wrap gap-1 text-sm leading-snug flex-1">
+                  {line.words.map((word) => {
+                    const isCorrected =
+                      word.correctedText && word.correctedText !== word.rawText;
+                    const isEditing = editingWord === word.id;
+                    const displayText = word.correctedText || word.rawText;
 
-                  if (isEditing) {
+                    if (isEditing) {
+                      return (
+                        <span key={word.id} className="inline-flex items-center gap-1">
+                          <input
+                            type="text"
+                            dir="rtl"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveWord(word.id, editValue);
+                              if (e.key === "Escape") setEditingWord(null);
+                            }}
+                            className="border-2 border-blue-500 rounded px-1 py-0.5 text-sm w-24 text-right bg-white"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => saveWord(word.id, editValue)}
+                            className="text-green-600 text-xs font-bold"
+                          >
+                            &#10003;
+                          </button>
+                          <button
+                            onClick={() => setEditingWord(null)}
+                            className="text-red-500 text-xs font-bold"
+                          >
+                            &#10005;
+                          </button>
+                        </span>
+                      );
+                    }
+
                     return (
-                      <span key={word.id} className="inline-flex items-center gap-1">
-                        <input
-                          type="text"
-                          dir="rtl"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") saveWord(word.id, editValue);
-                            if (e.key === "Escape") setEditingWord(null);
-                          }}
-                          className="border-2 border-blue-500 rounded px-1 py-0.5 text-sm w-24 text-right bg-white"
-                          autoFocus
-                        />
-                        <button
-                          onClick={() => saveWord(word.id, editValue)}
-                          className="text-green-600 text-xs font-bold"
-                        >
-                          &#10003;
-                        </button>
-                        <button
-                          onClick={() => setEditingWord(null)}
-                          className="text-red-500 text-xs font-bold"
-                        >
-                          &#10005;
-                        </button>
+                      <span
+                        key={word.id}
+                        onClick={() => startEdit(word)}
+                        className={`cursor-pointer px-1 rounded transition-all hover:bg-blue-200 hover:shadow text-gray-900 ${
+                          isCorrected
+                            ? "bg-green-200/90 border border-green-400 font-medium"
+                            : ""
+                        } ${
+                          word.rawText === "[?]"
+                            ? "bg-red-200/90 text-red-600 border border-red-400"
+                            : ""
+                        }`}
+                        title={
+                          isCorrected
+                            ? `Original: ${word.rawText}`
+                            : "Click to correct"
+                        }
+                      >
+                        {displayText}
                       </span>
                     );
-                  }
-
-                  return (
-                    <span
-                      key={word.id}
-                      onClick={() => startEdit(word)}
-                      className={`cursor-pointer px-1 rounded transition-all hover:bg-blue-200 hover:shadow text-gray-900 ${
-                        isCorrected
-                          ? "bg-green-200/90 border border-green-400 font-medium"
-                          : ""
-                      } ${word.rawText === "[?]" ? "bg-red-200/90 text-red-600 border border-red-400" : ""}`}
-                      title={
-                        isCorrected
-                          ? `Original: ${word.rawText}`
-                          : "Click to correct"
-                      }
-                    >
-                      {displayText}
-                    </span>
-                  );
-                })}
+                  })}
+                </div>
+                {!allConfirmed && (
+                  <button
+                    onClick={() => confirmLine(line.id)}
+                    className="text-xs bg-green-500 text-white px-2 py-0.5 rounded hover:bg-green-600 whitespace-nowrap"
+                    title="Confirm this line is correct"
+                  >
+                    &#10003;
+                  </button>
+                )}
+                {allConfirmed && (
+                  <span className="text-xs text-green-600 whitespace-nowrap">
+                    &#10003;
+                  </span>
+                )}
               </div>
-              {!allConfirmed && (
-                <button
-                  onClick={() => confirmLine(line.id)}
-                  className="text-xs bg-green-500 text-white px-2 py-0.5 rounded hover:bg-green-600 whitespace-nowrap"
-                  title="Confirm this line is correct"
-                >
-                  &#10003;
-                </button>
-              )}
-              {allConfirmed && (
-                <span className="text-xs text-green-600 whitespace-nowrap">&#10003;</span>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
       </div>
     );
   }
@@ -300,13 +427,17 @@ export default function EditorPage() {
                 Confirm All Lines
               </button>
               <button
-                onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")}
+                onClick={() =>
+                  window.open(`/api/files/${fileId}/export?format=txt`, "_blank")
+                }
                 className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
               >
                 Export TXT
               </button>
               <button
-                onClick={() => window.open(`/api/files/${fileId}/export?format=json`, "_blank")}
+                onClick={() =>
+                  window.open(`/api/files/${fileId}/export?format=json`, "_blank")
+                }
                 className="bg-gray-600 text-white px-3 py-1 rounded text-sm hover:bg-gray-700"
               >
                 Export JSON
@@ -316,17 +447,90 @@ export default function EditorPage() {
         </div>
       </div>
 
+      {/* Re-run suggestion banner */}
+      {showRerunBanner && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-4 flex items-center justify-between">
+          <div>
+            <p className="font-medium text-amber-800">
+              You&apos;ve corrected {correctionCount} words
+            </p>
+            <p className="text-sm text-amber-600">
+              Re-running OCR will use your corrections as training data for better accuracy.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowRerunBanner(false)}
+              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+            >
+              Dismiss
+            </button>
+            <button
+              onClick={runOCR}
+              disabled={ocrRunning}
+              className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
+            >
+              Re-run OCR with corrections
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* OCR Controls */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
+        {/* Training mode toggle */}
+        {!result && !trainingMode && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800 mb-2">
+              <strong>Tip:</strong> Type the first 2-3 lines manually to teach the OCR
+              how this writer forms letters. This dramatically improves accuracy.
+            </p>
+            <button
+              onClick={startTrainingMode}
+              disabled={detectingLines}
+              className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {detectingLines ? "Detecting lines..." : "Start Training Mode"}
+            </button>
+          </div>
+        )}
+
+        {/* Training mode status */}
+        {trainingMode && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800">
+              <strong>Training Mode:</strong> Type the text for each line you can read.
+              The first 2-3 lines are most helpful.{" "}
+              {trainingLineCount > 0 && (
+                <span className="text-green-700 font-medium">
+                  {trainingLineCount} line{trainingLineCount > 1 ? "s" : ""} entered
+                </span>
+              )}
+            </p>
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={() => {
+                  setTrainingMode(false);
+                  setDetectedLines([]);
+                  setTrainingTexts({});
+                }}
+                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 border rounded"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={runOCR}
+                disabled={ocrRunning || trainingLineCount === 0}
+                className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                Run OCR with {trainingLineCount} training line
+                {trainingLineCount !== 1 ? "s" : ""}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center gap-3">
-          <input
-            type="text"
-            dir="rtl"
-            placeholder="Optional: paste the first line of text to improve accuracy..."
-            value={firstLineHint}
-            onChange={(e) => setFirstLineHint(e.target.value)}
-            className="flex-1 border rounded px-3 py-2 text-right text-sm"
-          />
           <button
             onClick={preprocessImage}
             className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300"
@@ -334,15 +538,23 @@ export default function EditorPage() {
           >
             Enhance Image
           </button>
-          <button
-            onClick={runOCR}
-            disabled={ocrRunning}
-            className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${
-              result ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"
-            }`}
-          >
-            {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
-          </button>
+          {!trainingMode && (
+            <button
+              onClick={runOCR}
+              disabled={ocrRunning}
+              className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${
+                result
+                  ? "bg-amber-500 hover:bg-amber-600"
+                  : "bg-blue-600 hover:bg-blue-700"
+              }`}
+            >
+              {ocrRunning
+                ? "Processing..."
+                : result
+                ? "Re-run OCR"
+                : "Run OCR"}
+            </button>
+          )}
         </div>
         {ocrRunning && (
           <div className="mt-3 space-y-2">
@@ -352,7 +564,8 @@ export default function EditorPage() {
                 <span>Processing image...</span>
               </div>
               <span className="tabular-nums font-mono">
-                {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")}
+                {Math.floor(elapsedSeconds / 60)}:
+                {String(elapsedSeconds % 60).padStart(2, "0")}
               </span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -374,20 +587,31 @@ export default function EditorPage() {
         )}
       </div>
 
-      {/* Main content: image with OCR overlay */}
-      <div className="bg-white rounded-lg shadow overflow-hidden" ref={containerRef}>
+      {/* Main content: image with overlay */}
+      <div
+        className="bg-white rounded-lg shadow overflow-hidden"
+        ref={containerRef}
+      >
         {result && (
           <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b">
-            <button
-              onClick={() => setShowOverlay(!showOverlay)}
-              className={`text-xs px-3 py-1 rounded font-medium ${
-                showOverlay
-                  ? "bg-blue-100 text-blue-700 border border-blue-300"
-                  : "bg-gray-200 text-gray-600"
-              }`}
-            >
-              {showOverlay ? "Hide Overlay" : "Show Overlay"}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowOverlay(!showOverlay)}
+                className={`text-xs px-3 py-1 rounded font-medium ${
+                  showOverlay
+                    ? "bg-blue-100 text-blue-700 border border-blue-300"
+                    : "bg-gray-200 text-gray-600"
+                }`}
+              >
+                {showOverlay ? "Hide Overlay" : "Show Overlay"}
+              </button>
+              {correctionCount > 0 && (
+                <span className="text-xs text-gray-500">
+                  {correctionCount} correction
+                  {correctionCount !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
           </div>
         )}
         <div className="overflow-auto">
@@ -400,7 +624,9 @@ export default function EditorPage() {
             className="w-full invisible h-0"
             onLoad={onImageLoad}
           />
-          {!result ? (
+          {trainingMode && imageNaturalHeight > 0 ? (
+            renderTraining()
+          ) : !result ? (
             <div className="p-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
