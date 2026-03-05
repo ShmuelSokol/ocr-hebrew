@@ -278,7 +278,7 @@ async function ocrFullPage(
   detectedLines: { yTop: number; yBottom: number }[],
   trainingExamples: TrainingImage[],
   fewShotHints: Map<number, string>,
-): Promise<{ lines: OCRPageLine[]; inputTokens: number; outputTokens: number }> {
+): Promise<{ lines: OCRPageLine[]; model: string; inputTokens: number; outputTokens: number }> {
   const lineCount = detectedLines.length;
 
   const lineRanges = detectedLines.map((l, i) => `Line ${i + 1}: y=${l.yTop}..${l.yBottom}`).join("\n");
@@ -337,12 +337,31 @@ async function ocrFullPage(
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
-  const response = await client.messages.create({
-    model: "claude-opus-4-20250514",
-    max_tokens: 8192,
-    system: systemPrompt,
-    messages,
-  });
+  // Try Opus first, retry up to 3 times, then fall back to Sonnet
+  const models = ["claude-opus-4-20250514", "claude-opus-4-20250514", "claude-opus-4-20250514", "claude-sonnet-4-20250514"];
+  let response: Anthropic.Message | null = null;
+  let usedModel = models[0];
+  for (const model of models) {
+    try {
+      response = await client.messages.create({
+        model,
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages,
+      });
+      usedModel = model;
+      break;
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      if (status === 529 || status === 503 || status === 502) {
+        // Overloaded — wait and retry
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (!response) throw new Error("All API attempts failed (overloaded)");
 
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
   let rawText = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "[]";
@@ -395,6 +414,7 @@ async function ocrFullPage(
 
   return {
     lines: lines.slice(0, lineCount),
+    model: usedModel,
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
   };
@@ -470,7 +490,7 @@ export async function runOCR(
   const totalOutput = ocrResult.outputTokens;
 
   // Track token usage
-  const modelId = "claude-opus-4-20250514";
+  const modelId = ocrResult.model;
   const pricing = PRICING[modelId] || { input: 15, output: 75 };
   const costCents =
     (totalInput * pricing.input + totalOutput * pricing.output) / 1_000_000 * 100;
