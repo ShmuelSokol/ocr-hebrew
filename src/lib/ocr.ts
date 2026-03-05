@@ -7,8 +7,8 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 interface OCRWordResult {
   text: string;
-  xLeft: number;
-  xRight: number;
+  xLeft: number | null;
+  xRight: number | null;
 }
 
 interface OCRLineResult {
@@ -17,6 +17,21 @@ interface OCRLineResult {
   yBottom: number;
   text: string;
   words: OCRWordResult[];
+}
+
+// ─── Line Detection ─────────────────────────────────────
+
+function smoothArray(arr: number[], halfWindow: number): number[] {
+  const result: number[] = [];
+  for (let i = 0; i < arr.length; i++) {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - halfWindow); j <= Math.min(arr.length - 1, i + halfWindow); j++) {
+      sum += arr[j];
+      count++;
+    }
+    result.push(sum / count);
+  }
+  return result;
 }
 
 export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; yBottom: number }[]> {
@@ -38,131 +53,124 @@ export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; 
     rowDensity.push(dark / width);
   }
 
-  // Find text line regions
+  // Smooth to avoid noise bridging lines
+  const halfWindow = Math.max(2, Math.floor(height * 0.002));
+  const smoothed = smoothArray(rowDensity, halfWindow);
+
+  // Adaptive threshold: 10% of the max density (but at least 0.01)
+  const maxDensity = Math.max(...smoothed);
+  const threshold = Math.max(0.01, maxDensity * 0.1);
+
+  // Minimum gap between lines to count as a separator
+  const minGap = Math.max(4, Math.floor(height * 0.004));
+  // Minimum height for a valid text line
+  const minLineHeight = Math.max(10, Math.floor(height * 0.01));
+
+  // Find text regions using gap tolerance
   const lines: { yTop: number; yBottom: number }[] = [];
   let inText = false;
   let start = 0;
-  const threshold = 0.015;
+  let gapCount = 0;
 
   for (let y = 0; y < height; y++) {
-    if (rowDensity[y] > threshold && !inText) {
-      start = y;
-      inText = true;
-    } else if (rowDensity[y] <= threshold && inText) {
-      if (y - start > 15) {
-        lines.push({ yTop: Math.max(0, start - 5), yBottom: Math.min(height, y + 5) });
+    if (smoothed[y] > threshold) {
+      if (!inText) { start = y; inText = true; }
+      gapCount = 0;
+    } else if (inText) {
+      gapCount++;
+      if (gapCount >= minGap) {
+        const end = y - gapCount;
+        if (end - start >= minLineHeight) {
+          lines.push({ yTop: Math.max(0, start - 3), yBottom: Math.min(height, end + 3) });
+        }
+        inText = false;
       }
-      inText = false;
     }
   }
-  if (inText && height - start > 15) {
-    lines.push({ yTop: Math.max(0, start - 5), yBottom: height });
+  if (inText) {
+    const end = height;
+    if (end - start >= minLineHeight) {
+      lines.push({ yTop: Math.max(0, start - 3), yBottom: Math.min(height, end + 3) });
+    }
   }
 
-  return lines;
+  if (lines.length === 0) return lines;
+
+  // Split overly tall regions that likely contain multiple merged lines
+  const lineHeights = lines.map((l) => l.yBottom - l.yTop);
+  lineHeights.sort((a, b) => a - b);
+  const medianHeight = lineHeights[Math.floor(lineHeights.length / 2)];
+
+  const result: { yTop: number; yBottom: number }[] = [];
+  for (const line of lines) {
+    const h = line.yBottom - line.yTop;
+    if (h > medianHeight * 2 && medianHeight > 0) {
+      // Try to split at density valleys within this region
+      const subLines = splitAtValleys(smoothed, line.yTop, line.yBottom, medianHeight, threshold, minLineHeight);
+      result.push(...subLines);
+    } else {
+      result.push(line);
+    }
+  }
+
+  return result;
 }
 
-/**
- * Detect word boundaries within a line by finding vertical gaps in ink density.
- * Returns word regions sorted right-to-left (Hebrew reading order).
- */
-export function detectWordsInLine(
-  data: Buffer,
-  width: number,
-  line: { yTop: number; yBottom: number },
-  numOcrWords: number,
-): { xLeft: number; xRight: number }[] {
-  const darkThreshold = 160;
-  const lineHeight = line.yBottom - line.yTop;
+function splitAtValleys(
+  smoothed: number[],
+  yTop: number,
+  yBottom: number,
+  expectedHeight: number,
+  threshold: number,
+  minLineHeight: number,
+): { yTop: number; yBottom: number }[] {
+  const h = yBottom - yTop;
+  const numExpected = Math.round(h / expectedHeight);
+  if (numExpected <= 1) return [{ yTop, yBottom }];
 
-  // Calculate ink density per column within this line
-  const colDensity: number[] = [];
-  for (let x = 0; x < width; x++) {
-    let dark = 0;
-    for (let y = line.yTop; y < line.yBottom; y++) {
-      if (data[y * width + x] < darkThreshold) dark++;
-    }
-    colDensity.push(dark / lineHeight);
-  }
+  // Find valley points (local minima in smoothed density)
+  const valleys: { y: number; density: number }[] = [];
+  const searchMargin = Math.floor(expectedHeight * 0.3);
 
-  // Find gaps (runs of low-density columns)
-  // A gap needs to be wide enough to be a word space (not just thin letter spacing)
-  const gapThreshold = 0.02;
-  const minGapWidth = Math.max(5, Math.floor(width * 0.008)); // at least 0.8% of width or 5px
-
-  const gaps: { start: number; end: number; width: number }[] = [];
-  let inGap = false;
-  let gapStart = 0;
-
-  for (let x = 0; x < width; x++) {
-    if (colDensity[x] <= gapThreshold && !inGap) {
-      gapStart = x;
-      inGap = true;
-    } else if (colDensity[x] > gapThreshold && inGap) {
-      const gapWidth = x - gapStart;
-      if (gapWidth >= minGapWidth) {
-        gaps.push({ start: gapStart, end: x, width: gapWidth });
+  for (let y = yTop + searchMargin; y < yBottom - searchMargin; y++) {
+    // Check if this is a local minimum within a window
+    const windowSize = Math.max(3, Math.floor(expectedHeight * 0.1));
+    let isMin = true;
+    for (let dy = -windowSize; dy <= windowSize; dy++) {
+      if (dy !== 0 && y + dy >= yTop && y + dy < yBottom) {
+        if (smoothed[y + dy] < smoothed[y]) { isMin = false; break; }
       }
-      inGap = false;
     }
-  }
-  if (inGap) {
-    const gapWidth = width - gapStart;
-    if (gapWidth >= minGapWidth) {
-      gaps.push({ start: gapStart, end: width, width: gapWidth });
+    if (isMin) {
+      valleys.push({ y, density: smoothed[y] });
     }
   }
 
-  // Find the first and last columns with ink to trim margins
-  let firstInk = 0;
-  let lastInk = width - 1;
-  for (let x = 0; x < width; x++) {
-    if (colDensity[x] > gapThreshold) { firstInk = x; break; }
-  }
-  for (let x = width - 1; x >= 0; x--) {
-    if (colDensity[x] > gapThreshold) { lastInk = x; break; }
-  }
+  if (valleys.length === 0) return [{ yTop, yBottom }];
 
-  // Filter gaps to only those between text regions (not margins)
-  const innerGaps = gaps.filter((g) => g.start > firstInk && g.end < lastInk);
+  // Pick the best (numExpected - 1) valleys, preferring lowest density
+  const sorted = [...valleys].sort((a, b) => a.density - b.density);
+  const selectedCount = Math.min(sorted.length, numExpected - 1);
+  const selected = sorted.slice(0, selectedCount).sort((a, b) => a.y - b.y);
 
-  // We need exactly (numOcrWords - 1) gaps to split into numOcrWords regions
-  // If we have more gaps, take the widest ones; if fewer, use what we have
-  let selectedGaps: { start: number; end: number }[];
-  if (innerGaps.length === numOcrWords - 1) {
-    selectedGaps = innerGaps;
-  } else if (innerGaps.length > numOcrWords - 1 && numOcrWords > 1) {
-    // Take the (numOcrWords - 1) widest gaps
-    selectedGaps = [...innerGaps]
-      .sort((a, b) => b.width - a.width)
-      .slice(0, numOcrWords - 1)
-      .sort((a, b) => a.start - b.start);
-  } else {
-    // Not enough gaps — use what we found
-    selectedGaps = innerGaps;
+  // Build sub-lines from split points
+  const subLines: { yTop: number; yBottom: number }[] = [];
+  let prevY = yTop;
+  for (const v of selected) {
+    if (v.y - prevY >= minLineHeight) {
+      subLines.push({ yTop: prevY, yBottom: v.y });
+      prevY = v.y;
+    }
+  }
+  if (yBottom - prevY >= minLineHeight) {
+    subLines.push({ yTop: prevY, yBottom });
   }
 
-  // Build word regions from gaps
-  const wordRegions: { xLeft: number; xRight: number }[] = [];
-  let regionStart = firstInk;
-
-  for (const gap of selectedGaps) {
-    const midGap = Math.floor((gap.start + gap.end) / 2);
-    wordRegions.push({ xLeft: regionStart, xRight: midGap });
-    regionStart = midGap;
-  }
-  wordRegions.push({ xLeft: regionStart, xRight: lastInk + 1 });
-
-  // Sort right-to-left for Hebrew (rightmost word first)
-  wordRegions.sort((a, b) => b.xLeft - a.xLeft);
-
-  return wordRegions;
+  return subLines.length > 0 ? subLines : [{ yTop, yBottom }];
 }
 
-/**
- * Detect skew angle of handwritten text by analyzing the tilt of text lines.
- * Returns angle in degrees (positive = clockwise tilt, negative = counter-clockwise).
- */
+// ─── Skew Detection ─────────────────────────────────────
+
 export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   const sharp = (await import("sharp")).default;
   const { data, info } = await sharp(imageBuffer)
@@ -173,7 +181,6 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   const { width, height } = info;
   const darkThreshold = 160;
 
-  // Detect line regions first
   const rowDensity: number[] = [];
   for (let y = 0; y < height; y++) {
     let dark = 0;
@@ -197,9 +204,7 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
 
   if (lineRegions.length < 1) return 0;
 
-  // For each line, find center-of-mass of dark pixels in left vs right halves
   const angles: number[] = [];
-  // Use wider sampling bands for better detection
   const leftBound = Math.floor(width * 0.05);
   const leftEnd = Math.floor(width * 0.35);
   const rightStart = Math.floor(width * 0.65);
@@ -211,16 +216,10 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
 
     for (let y = region.yTop; y < region.yBottom; y++) {
       for (let x = leftBound; x < leftEnd; x++) {
-        if (data[y * width + x] < darkThreshold) {
-          leftWeightedY += y;
-          leftCount++;
-        }
+        if (data[y * width + x] < darkThreshold) { leftWeightedY += y; leftCount++; }
       }
       for (let x = rightStart; x < rightEnd; x++) {
-        if (data[y * width + x] < darkThreshold) {
-          rightWeightedY += y;
-          rightCount++;
-        }
+        if (data[y * width + x] < darkThreshold) { rightWeightedY += y; rightCount++; }
       }
     }
 
@@ -236,18 +235,14 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   }
 
   if (angles.length === 0) return 0;
-
-  // Use median angle for robustness
   angles.sort((a, b) => a - b);
   const median = angles[Math.floor(angles.length / 2)];
-
-  // Only correct angles up to 10°, beyond that it's likely not simple skew
   if (Math.abs(median) > 10) return 0;
-
   return Math.round(median * 100) / 100;
 }
 
-// Pricing per million tokens (as of 2025)
+// ─── Claude API ─────────────────────────────────────────
+
 const PRICING: Record<string, { input: number; output: number }> = {
   "claude-opus-4-20250514": { input: 15, output: 75 },
   "claude-sonnet-4-20250514": { input: 3, output: 15 },
@@ -263,11 +258,6 @@ interface TrainingImage {
   text: string;
 }
 
-/**
- * OCR a single cropped line image using real few-shot examples.
- * Training examples are included as reference images in a single message
- * so the model learns letter shapes without pattern-matching the conversation.
- */
 async function ocrSingleLine(
   lineCropBase64: string,
   lineIndex: number,
@@ -290,10 +280,8 @@ async function ocrSingleLine(
     "- Use [?] for any letter you cannot read.\n" +
     "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
 
-  // Build a single message with reference examples + the line to read
   const content: Anthropic.MessageCreateParams["messages"][0]["content"] = [];
 
-  // Add training examples as labeled reference images
   if (trainingExamples.length > 0) {
     content.push({
       type: "text",
@@ -318,7 +306,6 @@ async function ocrSingleLine(
     });
   }
 
-  // Add the actual line to OCR
   content.push({
     type: "image",
     source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: lineCropBase64 },
@@ -346,10 +333,8 @@ async function ocrSingleLine(
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
   let text = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
 
-  // Strip any English text the model might have output (descriptions, explanations)
-  // Keep only Hebrew, punctuation, spaces, and [?]
+  // Strip entirely-English responses (model described instead of transcribing)
   if (/[a-zA-Z]{3,}/.test(text) && !/[\u0590-\u05FF]/.test(text)) {
-    // Entirely English response — model described the image instead of transcribing
     text = "[?]";
   }
 
@@ -359,6 +344,8 @@ async function ocrSingleLine(
     outputTokens: response.usage.output_tokens,
   };
 }
+
+// ─── Main OCR Pipeline ──────────────────────────────────
 
 export async function runOCR(
   imageBase64: string,
@@ -372,14 +359,13 @@ export async function runOCR(
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
   const sharp = (await import("sharp")).default;
 
-  // Detect line positions in the image
+  // Detect line positions
   const detectedLines = await detectLines(imageBuffer);
 
-  // Load real training examples (image crops + correct text) for this profile
+  // Load training examples for this profile
   const trainingExamples: TrainingImage[] = [];
   let correctionContext = "";
   if (profileId) {
-    // Load image-based training examples (max 5 to keep prompt size reasonable)
     const examples = await prisma.trainingExample.findMany({
       where: { profileId },
       orderBy: { createdAt: "desc" },
@@ -400,7 +386,6 @@ export async function runOCR(
       }
     }
 
-    // Also load text-based corrections as supplementary context
     const corrections = await prisma.correction.findMany({
       where: { profileId },
     });
@@ -430,7 +415,7 @@ export async function runOCR(
     }
   }
 
-  // Build few-shot lookup from verified lines (text-only, for lines user typed in training mode)
+  // Build few-shot lookup
   const fewShotMap = new Map<number, string>();
   if (fewShotLines) {
     for (const l of fewShotLines) {
@@ -441,8 +426,7 @@ export async function runOCR(
     fewShotMap.set(0, firstLineHint);
   }
 
-  // Crop each line and OCR individually
-  // Process in batches of 3 for parallelism without overwhelming the API
+  // OCR each line in batches
   const BATCH_SIZE = 3;
   const lineResults: { text: string; inputTokens: number; outputTokens: number }[] = new Array(detectedLines.length);
   let totalInput = 0;
@@ -454,7 +438,6 @@ export async function runOCR(
 
     for (let i = batchStart; i < batchEnd; i++) {
       const line = detectedLines[i];
-      // Add padding around the line crop for context
       const padTop = Math.floor((line.yBottom - line.yTop) * 0.15);
       const padBottom = Math.floor((line.yBottom - line.yTop) * 0.15);
 
@@ -489,7 +472,6 @@ export async function runOCR(
     await Promise.all(batchPromises);
   }
 
-  // Sum up usage
   for (const lr of lineResults) {
     if (lr) {
       totalInput += lr.inputTokens;
@@ -514,24 +496,16 @@ export async function runOCR(
     },
   });
 
-  // Detect word positions using pixel analysis
-  const greyscale = await sharp(imageBuffer).greyscale().raw().toBuffer({ resolveWithObject: true });
-  const imgData = greyscale.data;
-  const imgWidth = greyscale.info.width;
-
-  // Build results with word x-coordinates
+  // Build results — words are just text splits, no pixel-based coordinate detection
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
     const text = lineResults[i]?.text || "[?]";
     const firstLine = text.split("\n")[0].trim();
     const wordTexts = firstLine.split(/\s+/);
 
-    // Detect word boundaries in this line
-    const wordRegions = detectWordsInLine(imgData, imgWidth, pos, wordTexts.length);
-
-    const words: OCRWordResult[] = wordTexts.map((wt, wi) => ({
+    const words: OCRWordResult[] = wordTexts.map((wt) => ({
       text: wt,
-      xLeft: wordRegions[wi]?.xLeft ?? 0,
-      xRight: wordRegions[wi]?.xRight ?? imgWidth,
+      xLeft: null,
+      xRight: null,
     }));
 
     return {

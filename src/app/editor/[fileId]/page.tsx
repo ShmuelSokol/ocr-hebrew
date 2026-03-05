@@ -534,19 +534,23 @@ export default function EditorPage() {
                           "border-gray-200 hover:border-blue-300 hover:shadow"
                         }`}
                       >
-                        {/* Handwriting crop via canvas */}
-                        <div className="bg-white">
-                          <WordCropCanvas
-                            imgEl={imgEl}
-                            word={word}
-                            line={line}
-                            maxHeight={50}
-                            key={`wc-${word.id}-${imageVersion}`}
-                          />
-                        </div>
+                          {/* Handwriting crop via canvas (only if coordinates exist) */}
+                        {word.xLeft != null && word.xRight != null && (
+                          <div className="bg-white">
+                            <WordCropCanvas
+                              imgEl={imgEl}
+                              word={word}
+                              line={line}
+                              maxHeight={50}
+                              key={`wc-${word.id}-${imageVersion}`}
+                            />
+                          </div>
+                        )}
 
-                        {/* OCR text below */}
-                        <div className={`w-full text-center px-1.5 py-1 text-sm border-t ${
+                        {/* OCR text */}
+                        <div className={`w-full text-center px-2 py-1.5 text-sm ${
+                          word.xLeft != null ? "border-t" : ""
+                        } ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : "bg-gray-50"
                         }`} dir="rtl">
@@ -882,15 +886,24 @@ export default function EditorPage() {
         return (
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-4 py-3">
             <div className="max-w-5xl mx-auto flex items-center gap-3">
-              {/* Handwriting crop preview via canvas */}
+              {/* Handwriting crop preview — line crop if no word coords */}
               <div className="shrink-0 border rounded overflow-hidden bg-white">
-                <WordCropCanvas
-                  imgEl={imageRef.current}
-                  word={selectedWord}
-                  line={selectedLine}
-                  maxHeight={48}
-                  key={`ebc-${selectedWord.id}-${imageVersion}`}
-                />
+                {selectedWord.xLeft != null && selectedWord.xRight != null ? (
+                  <WordCropCanvas
+                    imgEl={imageRef.current}
+                    word={selectedWord}
+                    line={selectedLine}
+                    maxHeight={48}
+                    key={`ebc-${selectedWord.id}-${imageVersion}`}
+                  />
+                ) : (
+                  <LineCropCanvas
+                    imgEl={imageRef.current}
+                    line={selectedLine}
+                    maxHeight={48}
+                    key={`eblc-${selectedLine.id}-${imageVersion}`}
+                  />
+                )}
               </div>
 
               <div className="flex flex-col gap-1 shrink-0" dir="rtl">
