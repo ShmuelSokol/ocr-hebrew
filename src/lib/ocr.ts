@@ -230,7 +230,7 @@ export async function runOCR(
     "Getting 70% right with [?] for the rest is far more useful than getting 100% of " +
     "confident-but-wrong text.";
 
-  const response = await client.messages.create({
+  const stream = client.messages.stream({
     model: "claude-opus-4-20250514",
     max_tokens: 16384,
     thinking: {
@@ -277,6 +277,8 @@ export async function runOCR(
       },
     ],
   });
+
+  const response = await stream.finalMessage();
 
   // Extract text from response (skip thinking blocks)
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
