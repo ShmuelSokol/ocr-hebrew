@@ -258,34 +258,47 @@ interface TrainingImage {
   text: string;
 }
 
-// Send full page image and get plain text lines back. Simple and reliable.
+// Send full page image and get plain text lines back.
 async function ocrFullPage(
   imageBase64: string,
   mediaType: string,
   lineCount: number,
   trainingExamples: TrainingImage[],
   fewShotHints: Map<number, string>,
+  correctionVocab: string[],
 ): Promise<{ lines: string[]; model: string; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
-    "You are a Hebrew handwriting OCR. You receive a full page of handwritten Hebrew text.\n" +
-    "The page contains " + lineCount + " lines of text.\n\n" +
-    "Output EXACTLY " + lineCount + " lines of Hebrew text, one per line, top to bottom.\n" +
-    "Output ONLY the Hebrew text. No English. No explanations. No line numbers. No prefixes.\n" +
-    "If a line is blank or unreadable, output: [?]\n\n" +
-    "Rules:\n" +
-    "- Read each letter from the actual ink strokes. Do not guess from context.\n" +
-    "- Do NOT output text from Torah, Talmud, or any memorized source.\n" +
-    "- These are personal study notes — text will NOT match any known source exactly.\n" +
-    "- Use [?] for any letter you genuinely cannot read.\n" +
-    "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
+    "You are an expert Hebrew handwriting OCR specializing in Torah/Talmud study notes.\n\n" +
+    "The image contains " + lineCount + " lines of handwritten Hebrew/Aramaic text.\n" +
+    "These are personal study notes on Talmud, Halacha, and related topics.\n\n" +
+    "Output EXACTLY " + lineCount + " lines of text, one per line, top to bottom.\n" +
+    "Output ONLY the transcribed text. No English. No explanations. No line numbers.\n\n" +
+    "Guidelines:\n" +
+    "- Read the actual handwriting carefully — every word must correspond to visible ink.\n" +
+    "- Use your knowledge of Hebrew, Aramaic, and Talmudic vocabulary to disambiguate unclear letters.\n" +
+    "- Every word you output should be a real Hebrew/Aramaic word or a standard abbreviation.\n" +
+    "- If a word looks like gibberish, re-examine the letter shapes — it's probably a real word you're misreading.\n" +
+    "- Common abbreviations: בס״ד, וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה, הרמב״ם, ע״פ, וכ׳, ר׳, ב״ד\n" +
+    "- Do NOT recite memorized passages. The writer summarizes in their own words — text won't match sources verbatim.\n" +
+    "- Do not skip or add words. Each word in output = one word visible in the handwriting.\n" +
+    "- Use [?] only for words that are truly illegible even with context.";
 
   const content: Anthropic.MessageCreateParams["messages"][0]["content"] = [];
+
+  // Correction vocabulary — words this writer commonly uses
+  if (correctionVocab.length > 0) {
+    content.push({
+      type: "text",
+      text: "Vocabulary from this writer's confirmed corrections (words they commonly use):\n" +
+        correctionVocab.join(", "),
+    });
+  }
 
   // Training examples
   if (trainingExamples.length > 0) {
     content.push({
       type: "text",
-      text: `Reference examples of this writer's handwriting — study the letter shapes:`,
+      text: "Reference examples of this writer's handwriting — study the letter shapes carefully:",
     });
     for (let i = 0; i < trainingExamples.length; i++) {
       const ex = trainingExamples[i];
@@ -293,7 +306,7 @@ async function ocrFullPage(
         type: "image",
         source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
       });
-      content.push({ type: "text", text: `Reference ${i + 1}: ${ex.text}` });
+      content.push({ type: "text", text: `This line reads: ${ex.text}` });
     }
   }
 
@@ -304,39 +317,46 @@ async function ocrFullPage(
   });
 
   // Instruction
-  let instruction = `Transcribe all ${lineCount} lines. Output ONLY Hebrew text, ${lineCount} lines, nothing else.`;
+  let instruction = `Transcribe all ${lineCount} lines of handwritten text from the image above.\nOutput EXACTLY ${lineCount} lines of Hebrew/Aramaic text, nothing else.`;
   if (fewShotHints.size > 0) {
-    instruction += "\n\nKnown lines (use exact text):";
+    instruction += "\n\nThese lines have been verified (use exact text):";
     const sorted = Array.from(fewShotHints.entries()).sort((a, b) => a[0] - b[0]);
     for (const [idx, text] of sorted) {
       instruction += `\nLine ${idx + 1}: ${text}`;
     }
-    instruction += "\n\nOutput ALL " + lineCount + " lines including the known ones.";
+    instruction += "\n\nInclude the verified lines AND transcribe the remaining lines.";
   }
   content.push({ type: "text", text: instruction });
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
-  // Use Sonnet (fast, reliable). Retry on overload.
-  const usedModel = "claude-sonnet-4-20250514";
+  // Try Opus first (best quality), fall back to Sonnet on persistent failure
+  const models = ["claude-opus-4-20250514", "claude-sonnet-4-20250514"];
   let response: Anthropic.Message | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      response = await client.messages.create({
-        model: usedModel,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages,
-      });
-      break;
-    } catch (err: unknown) {
-      const status = (err as { status?: number }).status;
-      if (status === 529 || status === 503 || status === 502) {
-        await new Promise(r => setTimeout(r, 3000));
-        continue;
+  let usedModel = models[0];
+
+  for (const model of models) {
+    usedModel = model;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        response = await client.messages.create({
+          model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages,
+        });
+        break;
+      } catch (err: unknown) {
+        const status = (err as { status?: number }).status;
+        if (status === 529 || status === 503 || status === 502) {
+          // Wait longer between retries: 3s, 6s, 10s, then try next model
+          await new Promise(r => setTimeout(r, 3000 + attempt * 3000));
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
+    if (response) break; // Got a response, stop trying models
   }
   if (!response) throw new Error("API overloaded — please try again in a minute");
 
@@ -382,8 +402,9 @@ export async function runOCR(
   // Detect line positions
   const detectedLines = await detectLines(imageBuffer);
 
-  // Load image-based training examples for this profile
+  // Load image-based training examples and correction vocabulary for this profile
   const trainingExamples: TrainingImage[] = [];
+  const correctionVocab: string[] = [];
   if (profileId) {
     const examples = await prisma.trainingExample.findMany({
       where: { profileId },
@@ -404,6 +425,23 @@ export async function runOCR(
         // Skip failed downloads
       }
     }
+
+    // Load confirmed words from previous OCR results for this profile
+    // These are words the user has confirmed or corrected — reliable vocabulary
+    const confirmedWords = await prisma.oCRWord.findMany({
+      where: {
+        correctedText: { not: null },
+        line: { result: { file: { profileId } } },
+      },
+      select: { correctedText: true },
+    });
+    const vocabSet = new Set<string>();
+    for (const w of confirmedWords) {
+      if (w.correctedText && w.correctedText !== "[?]" && /[\u0590-\u05FF]/.test(w.correctedText)) {
+        vocabSet.add(w.correctedText);
+      }
+    }
+    correctionVocab.push(...Array.from(vocabSet).slice(0, 200));
   }
 
   // Build few-shot lookup
@@ -424,6 +462,7 @@ export async function runOCR(
     detectedLines.length,
     trainingExamples,
     fewShotMap,
+    correctionVocab,
   );
 
   const totalInput = ocrResult.inputTokens;
