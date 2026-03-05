@@ -111,12 +111,6 @@ export default function EditorPage() {
   const [fileStatus, setFileStatus] = useState("");
   const [profileId, setProfileId] = useState<string | null>(null);
   const [profileName, setProfileName] = useState<string | null>(null);
-  const [showProfileCorrections, setShowProfileCorrections] = useState(false);
-  const [profileCorrections, setProfileCorrections] = useState<{
-    totalCorrections: number;
-    uniqueWords: number;
-    words: { originalText: string; corrections: { correctedText: string; count: number; ids: string[] }[] }[];
-  } | null>(null);
   const [showTrainingExamples, setShowTrainingExamples] = useState(false);
   const [trainingExamples, setTrainingExamples] = useState<{
     id: string; storagePath: string; text: string; createdAt: string;
@@ -371,28 +365,6 @@ export default function EditorPage() {
     setTrainingExamples([]);
   }
 
-  async function loadProfileCorrections() {
-    if (!profileId) return;
-    const res = await fetch(`/api/profiles/${profileId}/corrections`);
-    if (res.ok) { setProfileCorrections(await res.json()); setShowProfileCorrections(true); }
-  }
-
-  async function deleteCorrection(ids: string[]) {
-    for (const id of ids) await fetch(`/api/corrections/${id}`, { method: "DELETE" });
-    if (profileId) {
-      const res = await fetch(`/api/profiles/${profileId}/corrections`);
-      if (res.ok) setProfileCorrections(await res.json());
-    }
-  }
-
-  async function clearAllCorrections() {
-    if (!profileCorrections || !profileId) return;
-    if (!confirm(`Delete all ${profileCorrections.totalCorrections} learned corrections?`)) return;
-    const allIds = profileCorrections.words.flatMap((w) => w.corrections.flatMap((c) => c.ids));
-    for (const id of allIds) await fetch(`/api/corrections/${id}`, { method: "DELETE" });
-    const res = await fetch(`/api/profiles/${profileId}/corrections`);
-    if (res.ok) setProfileCorrections(await res.json());
-  }
 
   // ─── Review Mode ──────────────────────────────────────
 
@@ -700,10 +672,6 @@ export default function EditorPage() {
             className={`px-2 py-1 rounded text-xs font-medium ${showTrainingExamples ? "bg-purple-500 text-white" : "bg-purple-100 hover:bg-purple-200 text-purple-700"}`}>
             {showTrainingExamples ? "Hide Training" : `Training Examples (${trainingExamples.length || "?"})`}
           </button>
-          <button onClick={() => { if (showProfileCorrections) setShowProfileCorrections(false); else loadProfileCorrections(); }}
-            className={`px-2 py-1 rounded text-xs font-medium ${showProfileCorrections ? "bg-blue-500 text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-700"}`}>
-            {showProfileCorrections ? "Hide Word Corrections" : "Word Corrections"}
-          </button>
         </div>
       )}
 
@@ -741,40 +709,6 @@ export default function EditorPage() {
         </div>
       )}
 
-      {/* Corrections panel */}
-      {showProfileCorrections && profileCorrections && (
-        <div className="bg-white rounded-lg shadow p-4 mb-4 border">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="font-medium text-sm">
-              Learned corrections <span className="text-gray-400 font-normal ml-2">({profileCorrections.totalCorrections} total, {profileCorrections.uniqueWords} unique)</span>
-            </h3>
-            <div className="flex gap-2">
-              {profileCorrections.totalCorrections > 0 && (
-                <button onClick={clearAllCorrections} className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-200 rounded hover:bg-red-50">Clear All</button>
-              )}
-              <button onClick={() => setShowProfileCorrections(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Close</button>
-            </div>
-          </div>
-          <div className="max-h-48 overflow-auto space-y-1" dir="rtl">
-            {profileCorrections.words.length === 0 && <p className="text-gray-400 text-sm text-center py-2">No learned corrections yet</p>}
-            {profileCorrections.words.map((word, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm bg-gray-50 rounded px-2 py-1">
-                <span className="font-mono bg-gray-200 px-1.5 py-0.5 rounded text-xs">{word.originalText}</span>
-                <span className="text-gray-400">&larr;</span>
-                <div className="flex gap-1 flex-wrap flex-1">
-                  {word.corrections.map((c, j) => (
-                    <span key={j} className={`px-1.5 py-0.5 rounded text-xs ${c.correctedText === word.originalText ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>
-                      {c.correctedText}{c.count > 1 && <span className="opacity-60"> x{c.count}</span>}
-                    </span>
-                  ))}
-                </div>
-                <button onClick={() => deleteCorrection(word.corrections.flatMap((c) => c.ids))}
-                  className="text-red-400 hover:text-red-600 text-xs px-1" dir="ltr" title="Delete">&#10005;</button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Rerun banner */}
       {showRerunBanner && !reviewMode && (

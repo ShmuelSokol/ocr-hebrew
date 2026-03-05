@@ -262,7 +262,6 @@ async function ocrSingleLine(
   lineCropBase64: string,
   lineIndex: number,
   totalLines: number,
-  correctionContext: string,
   trainingExamples: TrainingImage[],
   fewShotHint?: string,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
@@ -315,9 +314,6 @@ async function ocrSingleLine(
   if (fewShotHint) {
     userText = `Output exactly: ${fewShotHint}`;
   }
-  if (correctionContext) {
-    userText += correctionContext;
-  }
   content.push({ type: "text", text: userText });
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
@@ -362,9 +358,8 @@ export async function runOCR(
   // Detect line positions
   const detectedLines = await detectLines(imageBuffer);
 
-  // Load training examples for this profile
+  // Load image-based training examples for this profile
   const trainingExamples: TrainingImage[] = [];
-  let correctionContext = "";
   if (profileId) {
     const examples = await prisma.trainingExample.findMany({
       where: { profileId },
@@ -383,34 +378,6 @@ export async function runOCR(
         }
       } catch {
         // Skip failed downloads
-      }
-    }
-
-    const corrections = await prisma.correction.findMany({
-      where: { profileId },
-    });
-    if (corrections.length > 0) {
-      const pairCounts = new Map<string, number>();
-      for (const c of corrections) {
-        const key = `${c.originalText}|||${c.correctedText}`;
-        pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
-      }
-
-      const corrLines: string[] = [];
-      pairCounts.forEach((count, key) => {
-        const [orig, corrected] = key.split("|||");
-        if (orig === corrected) {
-          if (count >= 2) corrLines.push(`"${orig}" is confirmed correct (seen ${count}x)`);
-        } else {
-          corrLines.push(`"${orig}" should be "${corrected}" (corrected ${count}x)`);
-        }
-      });
-
-      if (corrLines.length > 0) {
-        correctionContext =
-          "\n\nKnown patterns for this handwriting:\n" +
-          corrLines.join("\n") +
-          "\n";
       }
     }
   }
@@ -461,7 +428,7 @@ export async function runOCR(
         const hint = fewShotMap.get(i);
 
         const result = await ocrSingleLine(
-          cropBase64, i, detectedLines.length, correctionContext, trainingExamples, hint
+          cropBase64, i, detectedLines.length, trainingExamples, hint
         );
         lineResults[i] = result;
       })();

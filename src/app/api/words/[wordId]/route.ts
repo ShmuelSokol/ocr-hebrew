@@ -14,7 +14,7 @@ export async function PATCH(
 
   const word = await prisma.oCRWord.findUnique({
     where: { id: params.wordId },
-    include: { line: { include: { result: { include: { file: true } } } } },
+    include: { line: true },
   });
 
   if (!word) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -24,28 +24,6 @@ export async function PATCH(
     where: { id: params.wordId },
     data: { correctedText },
   });
-
-  // Save to profile for learning — allow multiple examples of the same word
-  // Only skip exact duplicates (same original + same corrected)
-  const file = word.line.result.file;
-  if (file.profileId) {
-    const exactDuplicate = await prisma.correction.findFirst({
-      where: {
-        profileId: file.profileId,
-        originalText: word.rawText,
-        correctedText,
-      },
-    });
-    if (!exactDuplicate) {
-      await prisma.correction.create({
-        data: {
-          profileId: file.profileId,
-          originalText: word.rawText,
-          correctedText,
-        },
-      });
-    }
-  }
 
   // Update line corrected text
   const lineWords = await prisma.oCRWord.findMany({
