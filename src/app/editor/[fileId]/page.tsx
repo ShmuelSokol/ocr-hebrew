@@ -67,6 +67,9 @@ export default function EditorPage() {
   const [addingWordLineId, setAddingWordLineId] = useState<string | null>(null);
   const [addingWordAfterIdx, setAddingWordAfterIdx] = useState<number>(-1);
   const [addWordValue, setAddWordValue] = useState("");
+  // Line highlight for side-by-side view
+  const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
+  const [imageCacheBust, setImageCacheBust] = useState(() => Date.now());
 
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -192,10 +195,25 @@ export default function EditorPage() {
     });
     if (res.ok) {
       const data = await res.json();
+      const bust = Date.now();
+      setImageCacheBust(bust);
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
       if (data.skewAngle && Math.abs(data.skewAngle) > 0.1) {
         alert(`Straightened image by ${data.skewAngle.toFixed(1)}°`);
       }
-      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
+    }
+  }
+
+  async function manualRotate(degrees: number) {
+    const res = await fetch(`/api/files/${fileId}/preprocess`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rotate: degrees }),
+    });
+    if (res.ok) {
+      const bust = Date.now();
+      setImageCacheBust(bust);
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
     }
   }
 
@@ -207,12 +225,17 @@ export default function EditorPage() {
     });
     if (res.ok) {
       const data = await res.json();
+      const bust = Date.now();
+      setImageCacheBust(bust);
+      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
       if (Math.abs(data.skewAngle) < 0.1) {
-        alert("Image is already straight (no skew detected)");
+        alert("Image appears straight (no significant skew detected). Try 'Enhance Image' for full processing.");
       } else {
         alert(`Straightened by ${data.skewAngle.toFixed(1)}°`);
       }
-      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert("Straighten failed: " + (err.error || "Unknown error"));
     }
   }
 
@@ -345,7 +368,7 @@ export default function EditorPage() {
     return (
       <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`/api/files/${fileId}/image`} alt="Original" className="w-full block" />
+        <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
         {detectedLines.map((line, i) => (
           <div key={`train-${i}`} className="absolute left-0 right-0 flex items-center gap-1 px-2" dir="rtl"
             style={{ top: `${(line.yTop / imageNaturalHeight) * 100}%`, minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%` }}>
@@ -379,82 +402,100 @@ export default function EditorPage() {
     );
   }
 
-  // === Render line-by-line view ===
+  // === Render side-by-side view: full image left, OCR text right ===
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
 
     return (
-      <div style={{ width: imageDisplayWidth || "100%" }}>
-        {result.lines.map((line) => {
-          const allConfirmed = line.words.every((w) => w.correctedText);
-          const lineHeight = (line.yBottom - line.yTop) * scale;
+      <div className="flex flex-col lg:flex-row">
+        {/* Left: Full original image with line highlight boxes */}
+        <div className="relative lg:w-1/2 flex-shrink-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
+          {/* Line highlight overlays */}
+          {result.lines.map((line) => {
+            const isHovered = highlightedLine === line.lineIndex;
+            return (
+              <div key={`hl-${line.id}`}
+                className="absolute left-0 right-0 cursor-pointer transition-all duration-150"
+                style={{
+                  top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+                  height: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+                  backgroundColor: isHovered ? "rgba(59, 130, 246, 0.15)" : "transparent",
+                  borderTop: isHovered ? "2px solid rgba(59, 130, 246, 0.5)" : "none",
+                  borderBottom: isHovered ? "2px solid rgba(59, 130, 246, 0.5)" : "none",
+                }}
+                onMouseEnter={() => setHighlightedLine(line.lineIndex)}
+                onMouseLeave={() => setHighlightedLine(null)}
+                onClick={() => setHighlightedLine(line.lineIndex === highlightedLine ? null : line.lineIndex)}
+              />
+            );
+          })}
+        </div>
 
-          return (
-            <div key={line.id}>
-              {/* Handwritten image strip */}
-              <div style={{
-                width: "100%", height: Math.max(lineHeight, 30),
-                backgroundImage: `url(/api/files/${fileId}/image)`,
-                backgroundPosition: `0 ${-line.yTop * scale}px`,
-                backgroundSize: `${imageDisplayWidth}px auto`,
-                backgroundRepeat: "no-repeat",
-              }} />
+        {/* Right: OCR text lines */}
+        {showOverlay && (
+          <div className="lg:w-1/2 lg:border-l lg:overflow-y-auto lg:max-h-[80vh]">
+            {result.lines.map((line) => {
+              const allConfirmed = line.words.every((w) => w.correctedText);
+              const isHovered = highlightedLine === line.lineIndex;
 
-              {/* OCR text strip */}
-              {showOverlay && (
-                <div className={`px-3 py-2 flex items-start gap-2 border-b-2 ${allConfirmed ? "bg-green-50 border-green-300" : "bg-gray-50 border-gray-200"}`} dir="rtl">
-                  <div className="flex flex-wrap items-center gap-0.5 text-base leading-relaxed flex-1">
-                    {/* Add button before first word */}
-                    {renderAddBtn(line.id, -1)}
-                    {line.words.map((word) => {
-                      const isCorrected = word.correctedText && word.correctedText !== word.rawText;
-                      const isEditing = editingWord === word.id;
-                      const displayText = word.correctedText || word.rawText;
+              return (
+                <div key={line.id}
+                  className={`px-3 py-2 border-b transition-colors duration-150 ${
+                    isHovered ? "bg-blue-50 border-blue-300" :
+                    allConfirmed ? "bg-green-50/50 border-gray-200" : "bg-white border-gray-200"
+                  }`}
+                  dir="rtl"
+                  onMouseEnter={() => setHighlightedLine(line.lineIndex)}
+                  onMouseLeave={() => setHighlightedLine(null)}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="text-[10px] text-gray-400 mt-1 shrink-0 w-4 text-center">{line.lineIndex + 1}</span>
+                    <div className="flex flex-wrap items-center gap-0.5 text-base leading-relaxed flex-1">
+                      {renderAddBtn(line.id, -1)}
+                      {line.words.map((word) => {
+                        const isCorrected = word.correctedText && word.correctedText !== word.rawText;
+                        const isEditing = editingWord === word.id;
+                        const displayText = word.correctedText || word.rawText;
 
-                      return (
-                        <span key={word.id} className="inline-flex items-center">
-                          {isEditing ? (
-                            <span className="inline-flex items-center gap-1">
-                              <input type="text" dir="rtl" value={editValue} onChange={(e) => setEditValue(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") saveWord(word.id, editValue); if (e.key === "Escape") setEditingWord(null); }}
-                                className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white" autoFocus />
-                              <button onClick={() => saveWord(word.id, editValue)} className="text-green-600 text-sm font-bold">&#10003;</button>
-                              <button onClick={() => setEditingWord(null)} className="text-red-500 text-sm font-bold">&#10005;</button>
-                              <button onClick={() => deleteWord(word.id)} className="text-red-400 text-xs hover:text-red-600" title="Delete word">&#128465;</button>
-                            </span>
-                          ) : (
-                            <span onClick={() => startEdit(word)}
-                              className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
-                                isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
-                              } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
-                              title={isCorrected ? `Original: ${word.rawText}` : "Click to correct"}>
-                              {displayText}
-                            </span>
-                          )}
-                          {/* Add button after this word */}
-                          {renderAddBtn(line.id, word.wordIndex)}
-                        </span>
-                      );
-                    })}
+                        return (
+                          <span key={word.id} className="inline-flex items-center">
+                            {isEditing ? (
+                              <span className="inline-flex items-center gap-1">
+                                <input type="text" dir="rtl" value={editValue} onChange={(e) => setEditValue(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") saveWord(word.id, editValue); if (e.key === "Escape") setEditingWord(null); }}
+                                  className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white" autoFocus />
+                                <button onClick={() => saveWord(word.id, editValue)} className="text-green-600 text-sm font-bold">&#10003;</button>
+                                <button onClick={() => setEditingWord(null)} className="text-red-500 text-sm font-bold">&#10005;</button>
+                                <button onClick={() => deleteWord(word.id)} className="text-red-400 text-xs hover:text-red-600" title="Delete word">&#128465;</button>
+                              </span>
+                            ) : (
+                              <span onClick={() => startEdit(word)}
+                                className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
+                                  isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
+                                } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
+                                title={isCorrected ? `Original: ${word.rawText}` : "Click to correct"}>
+                                {displayText}
+                              </span>
+                            )}
+                            {renderAddBtn(line.id, word.wordIndex)}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {!allConfirmed ? (
+                      <button onClick={() => confirmLine(line.id)}
+                        className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5 shrink-0" title="Confirm this line">&#10003;</button>
+                    ) : (
+                      <span className="text-xs text-green-600 whitespace-nowrap mt-1 shrink-0">&#10003;</span>
+                    )}
                   </div>
-                  {!allConfirmed ? (
-                    <button onClick={() => confirmLine(line.id)}
-                      className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5" title="Confirm this line">Confirm</button>
-                  ) : (
-                    <span className="text-xs text-green-600 whitespace-nowrap mt-1">&#10003;</span>
-                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-        {/* Remaining image */}
-        {(() => {
-          const last = result.lines[result.lines.length - 1];
-          const rem = (imageNaturalHeight - last.yBottom) * scale;
-          if (rem <= 2) return null;
-          return <div style={{ width: "100%", height: rem, backgroundImage: `url(/api/files/${fileId}/image)`, backgroundPosition: `0 ${-last.yBottom * scale}px`, backgroundSize: `${imageDisplayWidth}px auto`, backgroundRepeat: "no-repeat" }} />;
-        })()}
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   }
@@ -480,7 +521,7 @@ export default function EditorPage() {
         <div className="border rounded-lg overflow-hidden">
           <div style={{
             width: "100%", height: Math.max(lineHeight * 1.5, 60),
-            backgroundImage: `url(/api/files/${fileId}/image)`,
+            backgroundImage: `url(/api/files/${fileId}/image?t=${imageCacheBust})`,
             backgroundPosition: `0 ${-reviewLine.yTop * scale}px`,
             backgroundSize: `${imageDisplayWidth}px auto`,
             backgroundRepeat: "no-repeat",
@@ -616,8 +657,10 @@ export default function EditorPage() {
               </div>
             </div>
           )}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <button onClick={straightenImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Auto-detect and correct tilt/slant">Straighten</button>
+            <button onClick={() => manualRotate(-1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Rotate 1° counter-clockwise">&#8634; -1°</button>
+            <button onClick={() => manualRotate(1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Rotate 1° clockwise">&#8635; +1°</button>
             <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Straighten + enhance contrast/sharpness">Enhance Image</button>
             {!trainingMode && (
               <button onClick={runOCR} disabled={ocrRunning}
@@ -659,7 +702,7 @@ export default function EditorPage() {
         )}
         <div className="overflow-auto">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img ref={imageRef} src={`/api/files/${fileId}/image`} alt="" className="w-full invisible h-0" onLoad={onImageLoad} />
+          <img ref={imageRef} src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="" className="w-full invisible h-0" onLoad={onImageLoad} />
           {reviewMode ? (
             renderReview()
           ) : trainingMode && imageNaturalHeight > 0 ? (
@@ -667,7 +710,7 @@ export default function EditorPage() {
           ) : !result ? (
             <div className="p-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={`/api/files/${fileId}/image`} alt="Original" className="w-full" />
+              <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full" />
             </div>
           ) : imageNaturalHeight > 0 ? (
             renderOverlay()

@@ -64,8 +64,8 @@ export async function POST(
 
   const processed = await pipeline.jpeg({ quality: 95 }).toBuffer();
 
-  // Upload processed image back, replacing original
-  const newPath = file.storagePath.replace(/(\.[^.]+)$/, "_processed$1");
+  // Upload processed image back — use a stable processed path
+  const newPath = file.storagePath.replace(/_processed(?=\.[^.]+$)/, "").replace(/(\.[^.]+)$/, "_processed$1");
   await supabase.storage.from(BUCKET).upload(newPath, processed, {
     contentType: "image/jpeg",
     upsert: true,

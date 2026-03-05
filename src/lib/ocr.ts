@@ -91,14 +91,15 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   }
   if (inText && height - start > 15) lineRegions.push({ yTop: start, yBottom: height });
 
-  if (lineRegions.length < 2) return 0;
+  if (lineRegions.length < 1) return 0;
 
-  // For each line, find center-of-mass of dark pixels in left 20% and right 20%
+  // For each line, find center-of-mass of dark pixels in left vs right halves
   const angles: number[] = [];
-  const leftBound = Math.floor(width * 0.1);
-  const leftEnd = Math.floor(width * 0.3);
-  const rightStart = Math.floor(width * 0.7);
-  const rightEnd = Math.floor(width * 0.9);
+  // Use wider sampling bands for better detection
+  const leftBound = Math.floor(width * 0.05);
+  const leftEnd = Math.floor(width * 0.35);
+  const rightStart = Math.floor(width * 0.65);
+  const rightEnd = Math.floor(width * 0.95);
 
   for (const region of lineRegions) {
     let leftWeightedY = 0, leftCount = 0;
@@ -119,7 +120,7 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
       }
     }
 
-    if (leftCount < 10 || rightCount < 10) continue;
+    if (leftCount < 5 || rightCount < 5) continue;
 
     const leftCenterY = leftWeightedY / leftCount;
     const rightCenterY = rightWeightedY / rightCount;
@@ -136,8 +137,8 @@ export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   angles.sort((a, b) => a - b);
   const median = angles[Math.floor(angles.length / 2)];
 
-  // Only correct small angles (< 5°), ignore large ones (likely not skew)
-  if (Math.abs(median) > 5) return 0;
+  // Only correct angles up to 10°, beyond that it's likely not simple skew
+  if (Math.abs(median) > 10) return 0;
 
   return Math.round(median * 100) / 100;
 }
