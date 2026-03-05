@@ -385,7 +385,7 @@ export default function EditorPage() {
 
     return (
       <div style={{ width: imageDisplayWidth || "100%" }}>
-        {result.lines.map((line, i) => {
+        {result.lines.map((line) => {
           const allConfirmed = line.words.every((w) => w.correctedText);
           const lineHeight = (line.yBottom - line.yTop) * scale;
 
