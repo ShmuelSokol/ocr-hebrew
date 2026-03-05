@@ -81,7 +81,10 @@ export default function EditorPage() {
   const [addWordValue, setAddWordValue] = useState("");
   // Line highlight for side-by-side view
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
+  const [lockedLine, setLockedLine] = useState<number | null>(null);
   const [imageCacheBust, setImageCacheBust] = useState(() => Date.now());
+  const textPanelRef = useRef<HTMLDivElement>(null);
+  const lineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -493,6 +496,23 @@ export default function EditorPage() {
     );
   }
 
+  // The active line is either locked (clicked) or hovered
+  const activeLine = lockedLine ?? highlightedLine;
+
+  function handleImageLineClick(lineIndex: number) {
+    const newLocked = lockedLine === lineIndex ? null : lineIndex;
+    setLockedLine(newLocked);
+    // Auto-scroll text panel to this line
+    if (newLocked !== null) {
+      const el = lineRefs.current.get(newLocked);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  function handleTextLineClick(lineIndex: number) {
+    setLockedLine(lockedLine === lineIndex ? null : lineIndex);
+  }
+
   // === Render side-by-side view: full image left, OCR text right ===
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
@@ -505,46 +525,65 @@ export default function EditorPage() {
           <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
           {/* Line highlight overlays */}
           {result.lines.map((line) => {
-            const isHovered = highlightedLine === line.lineIndex;
+            const isActive = activeLine === line.lineIndex;
+            const isLocked = lockedLine === line.lineIndex;
             return (
               <div key={`hl-${line.id}`}
                 className="absolute left-0 right-0 cursor-pointer transition-all duration-150"
                 style={{
                   top: `${(line.yTop / imageNaturalHeight) * 100}%`,
                   height: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
-                  backgroundColor: isHovered ? "rgba(59, 130, 246, 0.15)" : "transparent",
-                  borderTop: isHovered ? "2px solid rgba(59, 130, 246, 0.5)" : "none",
-                  borderBottom: isHovered ? "2px solid rgba(59, 130, 246, 0.5)" : "none",
+                  backgroundColor: isActive ? (isLocked ? "rgba(59, 130, 246, 0.2)" : "rgba(59, 130, 246, 0.1)") : "transparent",
+                  borderTop: isActive ? `2px solid rgba(59, 130, 246, ${isLocked ? 0.8 : 0.4})` : "1px solid transparent",
+                  borderBottom: isActive ? `2px solid rgba(59, 130, 246, ${isLocked ? 0.8 : 0.4})` : "1px solid transparent",
+                  boxShadow: isLocked ? "0 0 0 1px rgba(59, 130, 246, 0.3)" : "none",
                 }}
-                onMouseEnter={() => setHighlightedLine(line.lineIndex)}
-                onMouseLeave={() => setHighlightedLine(null)}
-                onClick={() => setHighlightedLine(line.lineIndex === highlightedLine ? null : line.lineIndex)}
+                onMouseEnter={() => { if (lockedLine === null) setHighlightedLine(line.lineIndex); }}
+                onMouseLeave={() => { if (lockedLine === null) setHighlightedLine(null); }}
+                onClick={() => handleImageLineClick(line.lineIndex)}
               />
             );
           })}
+          {/* Click anywhere else on image to unlock */}
+          {lockedLine !== null && (
+            <div className="absolute top-0 left-0 right-0 bottom-0 pointer-events-none">
+              <div className="absolute top-2 left-2 bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded-full pointer-events-auto cursor-pointer shadow"
+                onClick={() => setLockedLine(null)}>
+                Line {lockedLine + 1} selected — click to deselect
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: OCR text lines */}
         {showOverlay && (
-          <div className="lg:w-1/2 lg:border-l lg:overflow-y-auto lg:max-h-[80vh]">
+          <div ref={textPanelRef} className="lg:w-1/2 lg:border-l lg:overflow-y-auto lg:max-h-[80vh]">
             {result.lines.map((line) => {
               const allConfirmed = line.words.every((w) => w.correctedText);
-              const isHovered = highlightedLine === line.lineIndex;
+              const isActive = activeLine === line.lineIndex;
+              const isLocked = lockedLine === line.lineIndex;
 
               return (
                 <div key={line.id}
-                  className={`px-3 py-2 border-b transition-colors duration-150 ${
-                    isHovered ? "bg-blue-50 border-blue-300" :
-                    allConfirmed ? "bg-green-50/50 border-gray-200" : "bg-white border-gray-200"
+                  ref={(el) => { if (el) lineRefs.current.set(line.lineIndex, el); }}
+                  className={`px-3 border-b transition-all duration-150 cursor-pointer ${
+                    isLocked ? "bg-blue-100 border-blue-400 py-3" :
+                    isActive ? "bg-blue-50 border-blue-300 py-2" :
+                    allConfirmed ? "bg-green-50/50 border-gray-200 py-2" : "bg-white border-gray-200 py-2"
                   }`}
                   dir="rtl"
-                  onMouseEnter={() => setHighlightedLine(line.lineIndex)}
-                  onMouseLeave={() => setHighlightedLine(null)}
+                  onMouseEnter={() => { if (lockedLine === null) setHighlightedLine(line.lineIndex); }}
+                  onMouseLeave={() => { if (lockedLine === null) setHighlightedLine(null); }}
+                  onClick={() => handleTextLineClick(line.lineIndex)}
                 >
                   <div className="flex items-start gap-2">
-                    <span className="text-[10px] text-gray-400 mt-1 shrink-0 w-4 text-center">{line.lineIndex + 1}</span>
-                    <div className="flex flex-wrap items-center gap-0.5 text-base leading-relaxed flex-1">
-                      {renderAddBtn(line.id, -1)}
+                    <span className={`mt-1 shrink-0 w-5 text-center rounded-full ${
+                      isActive ? "text-[11px] bg-blue-500 text-white font-bold" : "text-[10px] text-gray-400"
+                    }`}>{line.lineIndex + 1}</span>
+                    <div className={`flex flex-wrap items-center gap-0.5 leading-relaxed flex-1 ${
+                      isLocked ? "text-lg" : isActive ? "text-base" : "text-sm"
+                    }`}>
+                      {isLocked && renderAddBtn(line.id, -1)}
                       {line.words.map((word) => {
                         const isCorrected = word.correctedText && word.correctedText !== word.rawText;
                         const isEditing = editingWord === word.id;
@@ -562,7 +601,7 @@ export default function EditorPage() {
                                 <button onClick={() => deleteWord(word.id)} className="text-red-400 text-xs hover:text-red-600" title="Delete word">&#128465;</button>
                               </span>
                             ) : (
-                              <span onClick={() => startEdit(word)}
+                              <span onClick={(e) => { e.stopPropagation(); startEdit(word); }}
                                 className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
                                   isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
                                 } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
@@ -570,16 +609,16 @@ export default function EditorPage() {
                                 {displayText}
                               </span>
                             )}
-                            {renderAddBtn(line.id, word.wordIndex)}
+                            {isLocked && renderAddBtn(line.id, word.wordIndex)}
                           </span>
                         );
                       })}
                     </div>
                     {!allConfirmed ? (
-                      <button onClick={() => confirmLine(line.id)}
+                      <button onClick={(e) => { e.stopPropagation(); confirmLine(line.id); }}
                         className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5 shrink-0" title="Confirm this line">&#10003;</button>
                     ) : (
-                      <button onClick={() => unconfirmLine(line.id)}
+                      <button onClick={(e) => { e.stopPropagation(); unconfirmLine(line.id); }}
                         className="text-xs text-green-600 hover:text-red-500 whitespace-nowrap mt-1 shrink-0 transition-colors" title="Click to unconfirm">&#10003;</button>
                     )}
                   </div>
