@@ -134,6 +134,7 @@ export default function EditorPage() {
 
   const imageRef = useRef<HTMLImageElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const ocrStartRef = useRef<number>(0);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   // ─── Data Loading ──────────────────────────────────────
@@ -172,8 +173,12 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (ocrRunning) {
+      ocrStartRef.current = Date.now();
       setElapsedSeconds(0);
-      timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+      // Use wall-clock time so timer stays accurate when tab is backgrounded on mobile
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(Math.floor((Date.now() - ocrStartRef.current) / 1000));
+      }, 1000);
     } else {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     }
