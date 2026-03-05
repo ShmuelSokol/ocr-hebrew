@@ -33,66 +33,7 @@ interface DetectedLine {
   yBottom: number;
 }
 
-// Shows the full line crop with the target word's approximate area highlighted
-function WordInLineCanvas({ imgEl, word, line, maxHeight = 50 }: {
-  imgEl: HTMLImageElement | null;
-  word: Word;
-  line: Line;
-  maxHeight?: number;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
-
-    const imgW = imgEl.naturalWidth;
-    const srcH = line.yBottom - line.yTop;
-    if (srcH <= 0) return;
-
-    const scale = Math.min(1.5, maxHeight / srcH);
-    canvas.width = Math.round(imgW * scale);
-    canvas.height = Math.max(15, Math.round(srcH * scale));
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // Draw the full line
-    ctx.drawImage(imgEl, 0, line.yTop, imgW, srcH, 0, 0, canvas.width, canvas.height);
-
-    // Estimate word position and highlight it
-    const words = line.words;
-    const totalChars = words.reduce((sum, w) => sum + (w.correctedText || w.rawText).length, 0);
-    if (totalChars === 0) return;
-
-    const totalWithSpaces = totalChars + Math.max(0, words.length - 1);
-    const charW = canvas.width / totalWithSpaces;
-
-    // RTL: first word starts at right edge
-    let offset = 0;
-    for (const w of words) {
-      const wLen = (w.correctedText || w.rawText).length;
-      if (w.id === word.id) {
-        const xRight = canvas.width - offset * charW;
-        const xLeft = canvas.width - (offset + wLen) * charW;
-        // Dim everything outside the word area
-        ctx.fillStyle = "rgba(255,255,255,0.6)";
-        ctx.fillRect(0, 0, Math.max(0, xLeft), canvas.height);
-        ctx.fillRect(Math.min(canvas.width, xRight), 0, canvas.width, canvas.height);
-        // Highlight border around word
-        ctx.strokeStyle = "#3b82f6";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.max(0, xLeft), 0, xRight - xLeft, canvas.height);
-        break;
-      }
-      offset += wLen + 1;
-    }
-  }, [imgEl, word, line, maxHeight]);
-
-  return <canvas ref={canvasRef} className="block w-full" />;
-}
-
-// Canvas-based line crop for review mode
+// Canvas-based line crop
 function LineCropCanvas({ imgEl, line, maxHeight = 80 }: {
   imgEl: HTMLImageElement | null;
   line: Line;
@@ -500,7 +441,7 @@ export default function EditorPage() {
               </div>
 
               {/* Word text row — RTL */}
-              <div className="flex flex-row-reverse flex-wrap items-start gap-1 px-2 py-2" dir="rtl">
+              <div className="flex flex-wrap items-start gap-1 px-2 py-2" dir="rtl">
                 {/* Line number + confirm */}
                 <div className="flex flex-col items-center justify-center shrink-0 w-6 pt-1">
                   <span className="text-[10px] text-gray-400">{line.lineIndex + 1}</span>
@@ -571,9 +512,9 @@ export default function EditorPage() {
           <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(currentWordNum / totalWords) * 100}%` }} />
         </div>
 
-        {/* Word handwriting crop — large and centered */}
-        <div className="flex justify-center border rounded-xl overflow-hidden bg-white p-2">
-          <WordInLineCanvas imgEl={imgEl} word={reviewWord} line={reviewLine} maxHeight={100} key={`rwc-${reviewWord.id}-${imageVersion}`} />
+        {/* Line handwriting image */}
+        <div className="border rounded-xl overflow-hidden bg-white">
+          <LineCropCanvas imgEl={imgEl} line={reviewLine} maxHeight={100} key={`rlc-${reviewLine.id}-${imageVersion}`} />
         </div>
 
         {/* Focused word text */}
@@ -844,13 +785,12 @@ export default function EditorPage() {
             <div className="max-w-5xl mx-auto space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-3">
               {/* Top row on mobile: crop + OCR text */}
               <div className="flex items-center gap-2 sm:gap-3">
-                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[120px] sm:max-w-[200px]">
-                  <WordInLineCanvas
+                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px] sm:max-w-[300px]">
+                  <LineCropCanvas
                     imgEl={imageRef.current}
-                    word={selectedWord}
                     line={selectedLine}
-                    maxHeight={40}
-                    key={`ebc-${selectedWord.id}-${imageVersion}`}
+                    maxHeight={48}
+                    key={`eblc-${selectedLine.id}-${imageVersion}`}
                   />
                 </div>
                 <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
