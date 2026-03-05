@@ -162,8 +162,8 @@ interface TrainingImage {
 
 /**
  * OCR a single cropped line image using real few-shot examples.
- * Training examples are sent as image+text pairs in a multi-turn conversation
- * so Claude can learn the writer's letter shapes before reading the new line.
+ * Training examples are included as reference images in a single message
+ * so the model learns letter shapes without pattern-matching the conversation.
  */
 async function ocrSingleLine(
   lineCropBase64: string,
@@ -174,57 +174,63 @@ async function ocrSingleLine(
   fewShotHint?: string,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
-    "You are a Hebrew handwriting OCR. You receive an image of ONE cropped line of handwritten Hebrew.\n" +
+    "You are a Hebrew handwriting OCR. You receive images of handwritten Hebrew lines.\n" +
     "Your response must be ONLY Hebrew characters, spaces, and punctuation. Nothing else.\n" +
     "NEVER output English. NEVER describe the image. NEVER explain anything.\n" +
     "If the image is blank or unreadable, output only: [?]\n\n" +
     "Rules:\n" +
-    "- Read each letter shape from the ink. Do not guess from context.\n" +
+    "- Read each letter shape from the ink on the LAST image. Do not guess from context.\n" +
+    "- Reference images are provided to show how THIS writer forms letters — study them.\n" +
+    "- The new line will have DIFFERENT text than the references. Read what is actually written.\n" +
     "- Do not auto-complete from Torah, Talmud, or any known text.\n" +
     "- These are personal notes — text won't match any known source.\n" +
     "- Use [?] for any letter you cannot read.\n" +
     "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
 
-  // Build multi-turn conversation with few-shot examples
-  const messages: Anthropic.MessageParam[] = [];
+  // Build a single message with reference examples + the line to read
+  const content: Anthropic.MessageCreateParams["messages"][0]["content"] = [];
 
-  // Add training examples as user/assistant turns
-  for (const ex of trainingExamples) {
-    messages.push({
-      role: "user",
-      content: [
-        {
-          type: "image",
-          source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
-        },
-        { type: "text", text: "Transcribe." },
-      ],
+  // Add training examples as labeled reference images
+  if (trainingExamples.length > 0) {
+    content.push({
+      type: "text",
+      text: `Here are ${trainingExamples.length} reference examples of this writer's handwriting with correct transcriptions. Study the letter shapes:`,
     });
-    messages.push({
-      role: "assistant",
-      content: [{ type: "text", text: ex.text }],
+
+    for (let i = 0; i < trainingExamples.length; i++) {
+      const ex = trainingExamples[i];
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
+      });
+      content.push({
+        type: "text",
+        text: `Reference ${i + 1} reads: ${ex.text}`,
+      });
+    }
+
+    content.push({
+      type: "text",
+      text: "Now read the NEW line below. It has DIFFERENT text — do not copy from the references above.",
     });
   }
 
-  // Now add the actual line to OCR
-  let userText = "Transcribe.";
+  // Add the actual line to OCR
+  content.push({
+    type: "image",
+    source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: lineCropBase64 },
+  });
+
+  let userText = "Transcribe this new line.";
   if (fewShotHint) {
     userText = `Output exactly: ${fewShotHint}`;
   }
   if (correctionContext) {
     userText += correctionContext;
   }
+  content.push({ type: "text", text: userText });
 
-  messages.push({
-    role: "user",
-    content: [
-      {
-        type: "image",
-        source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: lineCropBase64 },
-      },
-      { type: "text", text: userText },
-    ],
-  });
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
 
   const stream = client.messages.stream({
     model: "claude-sonnet-4-20250514",
