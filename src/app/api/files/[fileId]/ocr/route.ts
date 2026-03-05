@@ -66,7 +66,9 @@ export async function POST(
             words: {
               create: line.words.map((word, wi) => ({
                 wordIndex: wi,
-                rawText: word,
+                rawText: word.text,
+                xLeft: word.xLeft,
+                xRight: word.xRight,
               })),
             },
           })),

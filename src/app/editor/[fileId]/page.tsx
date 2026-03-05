@@ -8,6 +8,8 @@ interface Word {
   wordIndex: number;
   rawText: string;
   correctedText: string | null;
+  xLeft: number | null;
+  xRight: number | null;
 }
 
 interface Line {
@@ -82,7 +84,9 @@ export default function EditorPage() {
   // Line highlight for side-by-side view
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
   const [lockedLine, setLockedLine] = useState<number | null>(null);
+  const [hoveredWordId, setHoveredWordId] = useState<string | null>(null);
   const [imageCacheBust, setImageCacheBust] = useState(() => Date.now());
+  const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const textPanelRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -148,6 +152,7 @@ export default function EditorPage() {
   function onImageLoad() {
     if (imageRef.current) {
       setImageNaturalHeight(imageRef.current.naturalHeight);
+      setImageNaturalWidth(imageRef.current.naturalWidth);
       setImageDisplayWidth(imageRef.current.clientWidth);
     }
   }
@@ -519,32 +524,59 @@ export default function EditorPage() {
 
     return (
       <div className="flex flex-col lg:flex-row">
-        {/* Left: Full original image with line highlight boxes */}
+        {/* Left: Full original image with word/line highlight boxes */}
         <div className="relative lg:w-1/2 flex-shrink-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={`/api/files/${fileId}/image?t=${imageCacheBust}`} alt="Original" className="w-full block" />
-          {/* Line highlight overlays */}
+          {/* Word + line highlight overlays */}
           {result.lines.map((line) => {
             const isActive = activeLine === line.lineIndex;
             const isLocked = lockedLine === line.lineIndex;
+            const hasWordCoords = line.words.some((w) => w.xLeft != null && w.xRight != null);
+
             return (
-              <div key={`hl-${line.id}`}
-                className="absolute left-0 right-0 cursor-pointer transition-all duration-150"
-                style={{
-                  top: `${(line.yTop / imageNaturalHeight) * 100}%`,
-                  height: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
-                  backgroundColor: isActive ? (isLocked ? "rgba(59, 130, 246, 0.2)" : "rgba(59, 130, 246, 0.1)") : "transparent",
-                  borderTop: isActive ? `2px solid rgba(59, 130, 246, ${isLocked ? 0.8 : 0.4})` : "1px solid transparent",
-                  borderBottom: isActive ? `2px solid rgba(59, 130, 246, ${isLocked ? 0.8 : 0.4})` : "1px solid transparent",
-                  boxShadow: isLocked ? "0 0 0 1px rgba(59, 130, 246, 0.3)" : "none",
-                }}
-                onMouseEnter={() => { if (lockedLine === null) setHighlightedLine(line.lineIndex); }}
-                onMouseLeave={() => { if (lockedLine === null) setHighlightedLine(null); }}
-                onClick={() => handleImageLineClick(line.lineIndex)}
-              />
+              <div key={`hl-${line.id}`}>
+                {/* Line-level highlight (background) */}
+                <div
+                  className="absolute left-0 right-0 cursor-pointer transition-all duration-150"
+                  style={{
+                    top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+                    height: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+                    backgroundColor: isActive ? (isLocked ? "rgba(59, 130, 246, 0.12)" : "rgba(59, 130, 246, 0.06)") : "transparent",
+                    borderTop: isActive ? `1px solid rgba(59, 130, 246, ${isLocked ? 0.5 : 0.2})` : "none",
+                    borderBottom: isActive ? `1px solid rgba(59, 130, 246, ${isLocked ? 0.5 : 0.2})` : "none",
+                  }}
+                  onMouseEnter={() => { if (lockedLine === null) setHighlightedLine(line.lineIndex); }}
+                  onMouseLeave={() => { if (lockedLine === null) { setHighlightedLine(null); setHoveredWordId(null); } }}
+                  onClick={() => handleImageLineClick(line.lineIndex)}
+                />
+                {/* Word-level highlights (when line is active and has coordinates) */}
+                {isActive && hasWordCoords && imageNaturalWidth > 0 && line.words.map((word) => {
+                  if (word.xLeft == null || word.xRight == null) return null;
+                  const isWordHovered = hoveredWordId === word.id;
+                  return (
+                    <div key={`whl-${word.id}`}
+                      className="absolute cursor-pointer transition-all duration-100"
+                      style={{
+                        top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+                        height: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+                        left: `${(word.xLeft / imageNaturalWidth) * 100}%`,
+                        width: `${((word.xRight - word.xLeft) / imageNaturalWidth) * 100}%`,
+                        backgroundColor: isWordHovered ? "rgba(234, 88, 12, 0.2)" : "transparent",
+                        border: isWordHovered ? "2px solid rgba(234, 88, 12, 0.6)" : "1px solid rgba(59, 130, 246, 0.15)",
+                        borderRadius: "3px",
+                      }}
+                      onMouseEnter={() => setHoveredWordId(word.id)}
+                      onMouseLeave={() => setHoveredWordId(null)}
+                      onClick={(e) => { e.stopPropagation(); startEdit(word); }}
+                      title={word.correctedText || word.rawText}
+                    />
+                  );
+                })}
+              </div>
             );
           })}
-          {/* Click anywhere else on image to unlock */}
+          {/* Deselect pill */}
           {lockedLine !== null && (
             <div className="absolute top-0 left-0 right-0 bottom-0 pointer-events-none">
               <div className="absolute top-2 left-2 bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded-full pointer-events-auto cursor-pointer shadow"
@@ -602,7 +634,10 @@ export default function EditorPage() {
                               </span>
                             ) : (
                               <span onClick={(e) => { e.stopPropagation(); startEdit(word); }}
+                                onMouseEnter={() => setHoveredWordId(word.id)}
+                                onMouseLeave={() => setHoveredWordId(null)}
                                 className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
+                                  hoveredWordId === word.id ? "bg-orange-100 ring-2 ring-orange-400 shadow-md" :
                                   isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
                                 } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
                                 title={isCorrected ? `Original: ${word.rawText}` : "Click to correct"}>

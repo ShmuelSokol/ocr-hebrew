@@ -5,12 +5,18 @@ import { supabase, BUCKET } from "./supabase";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+interface OCRWordResult {
+  text: string;
+  xLeft: number;
+  xRight: number;
+}
+
 interface OCRLineResult {
   lineIndex: number;
   yTop: number;
   yBottom: number;
   text: string;
-  words: string[];
+  words: OCRWordResult[];
 }
 
 export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; yBottom: number }[]> {
@@ -54,6 +60,103 @@ export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; 
   }
 
   return lines;
+}
+
+/**
+ * Detect word boundaries within a line by finding vertical gaps in ink density.
+ * Returns word regions sorted right-to-left (Hebrew reading order).
+ */
+export function detectWordsInLine(
+  data: Buffer,
+  width: number,
+  line: { yTop: number; yBottom: number },
+  numOcrWords: number,
+): { xLeft: number; xRight: number }[] {
+  const darkThreshold = 160;
+  const lineHeight = line.yBottom - line.yTop;
+
+  // Calculate ink density per column within this line
+  const colDensity: number[] = [];
+  for (let x = 0; x < width; x++) {
+    let dark = 0;
+    for (let y = line.yTop; y < line.yBottom; y++) {
+      if (data[y * width + x] < darkThreshold) dark++;
+    }
+    colDensity.push(dark / lineHeight);
+  }
+
+  // Find gaps (runs of low-density columns)
+  // A gap needs to be wide enough to be a word space (not just thin letter spacing)
+  const gapThreshold = 0.02;
+  const minGapWidth = Math.max(5, Math.floor(width * 0.008)); // at least 0.8% of width or 5px
+
+  const gaps: { start: number; end: number; width: number }[] = [];
+  let inGap = false;
+  let gapStart = 0;
+
+  for (let x = 0; x < width; x++) {
+    if (colDensity[x] <= gapThreshold && !inGap) {
+      gapStart = x;
+      inGap = true;
+    } else if (colDensity[x] > gapThreshold && inGap) {
+      const gapWidth = x - gapStart;
+      if (gapWidth >= minGapWidth) {
+        gaps.push({ start: gapStart, end: x, width: gapWidth });
+      }
+      inGap = false;
+    }
+  }
+  if (inGap) {
+    const gapWidth = width - gapStart;
+    if (gapWidth >= minGapWidth) {
+      gaps.push({ start: gapStart, end: width, width: gapWidth });
+    }
+  }
+
+  // Find the first and last columns with ink to trim margins
+  let firstInk = 0;
+  let lastInk = width - 1;
+  for (let x = 0; x < width; x++) {
+    if (colDensity[x] > gapThreshold) { firstInk = x; break; }
+  }
+  for (let x = width - 1; x >= 0; x--) {
+    if (colDensity[x] > gapThreshold) { lastInk = x; break; }
+  }
+
+  // Filter gaps to only those between text regions (not margins)
+  const innerGaps = gaps.filter((g) => g.start > firstInk && g.end < lastInk);
+
+  // We need exactly (numOcrWords - 1) gaps to split into numOcrWords regions
+  // If we have more gaps, take the widest ones; if fewer, use what we have
+  let selectedGaps: { start: number; end: number }[];
+  if (innerGaps.length === numOcrWords - 1) {
+    selectedGaps = innerGaps;
+  } else if (innerGaps.length > numOcrWords - 1 && numOcrWords > 1) {
+    // Take the (numOcrWords - 1) widest gaps
+    selectedGaps = [...innerGaps]
+      .sort((a, b) => b.width - a.width)
+      .slice(0, numOcrWords - 1)
+      .sort((a, b) => a.start - b.start);
+  } else {
+    // Not enough gaps — use what we found
+    selectedGaps = innerGaps;
+  }
+
+  // Build word regions from gaps
+  const wordRegions: { xLeft: number; xRight: number }[] = [];
+  let regionStart = firstInk;
+
+  for (const gap of selectedGaps) {
+    const midGap = Math.floor((gap.start + gap.end) / 2);
+    wordRegions.push({ xLeft: regionStart, xRight: midGap });
+    regionStart = midGap;
+  }
+  wordRegions.push({ xLeft: regionStart, xRight: lastInk + 1 });
+
+  // Sort right-to-left for Hebrew (rightmost word first)
+  wordRegions.sort((a, b) => b.xLeft - a.xLeft);
+
+  return wordRegions;
 }
 
 /**
@@ -411,17 +514,32 @@ export async function runOCR(
     },
   });
 
-  // Build results
+  // Detect word positions using pixel analysis
+  const greyscale = await sharp(imageBuffer).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const imgData = greyscale.data;
+  const imgWidth = greyscale.info.width;
+
+  // Build results with word x-coordinates
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
     const text = lineResults[i]?.text || "[?]";
-    // Take only the first line of output in case model outputs multiple lines
     const firstLine = text.split("\n")[0].trim();
+    const wordTexts = firstLine.split(/\s+/);
+
+    // Detect word boundaries in this line
+    const wordRegions = detectWordsInLine(imgData, imgWidth, pos, wordTexts.length);
+
+    const words: OCRWordResult[] = wordTexts.map((wt, wi) => ({
+      text: wt,
+      xLeft: wordRegions[wi]?.xLeft ?? 0,
+      xRight: wordRegions[wi]?.xRight ?? imgWidth,
+    }));
+
     return {
       lineIndex: i,
       yTop: pos.yTop,
       yBottom: pos.yBottom,
       text: firstLine,
-      words: firstLine.split(/\s+/),
+      words,
     };
   });
 
