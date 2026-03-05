@@ -174,13 +174,15 @@ async function ocrSingleLine(
   fewShotHint?: string,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const systemPrompt =
-    "You read ONE line of handwritten Hebrew text from a cropped image strip. " +
-    "Output ONLY the Hebrew text you see — nothing else. No line numbers, no labels, no commentary.\n\n" +
-    "RULES:\n" +
-    "- Look at each letter shape individually. Read the INK, not what you think it should say.\n" +
-    "- Do NOT auto-complete from Torah, Talmud, Gemara, or any known text.\n" +
-    "- These are someone's personal notes. The text will NOT match any known source.\n" +
-    "- If you cannot read a letter, write [?]. Never guess.\n" +
+    "You are a Hebrew handwriting OCR. You receive an image of ONE cropped line of handwritten Hebrew.\n" +
+    "Your response must be ONLY Hebrew characters, spaces, and punctuation. Nothing else.\n" +
+    "NEVER output English. NEVER describe the image. NEVER explain anything.\n" +
+    "If the image is blank or unreadable, output only: [?]\n\n" +
+    "Rules:\n" +
+    "- Read each letter shape from the ink. Do not guess from context.\n" +
+    "- Do not auto-complete from Torah, Talmud, or any known text.\n" +
+    "- These are personal notes — text won't match any known source.\n" +
+    "- Use [?] for any letter you cannot read.\n" +
     "- Common abbreviations: וכו׳, עי׳, הנ״ל, ר״ל, ע״ש, א״כ, ד״ה";
 
   // Build multi-turn conversation with few-shot examples
@@ -195,7 +197,7 @@ async function ocrSingleLine(
           type: "image",
           source: { type: "base64", media_type: "image/jpeg" as ImageMediaType, data: ex.base64 },
         },
-        { type: "text", text: "Read this handwritten Hebrew line." },
+        { type: "text", text: "Transcribe." },
       ],
     });
     messages.push({
@@ -205,9 +207,9 @@ async function ocrSingleLine(
   }
 
   // Now add the actual line to OCR
-  let userText = "Read this handwritten Hebrew line.";
+  let userText = "Transcribe.";
   if (fewShotHint) {
-    userText += `\n\nThe correct transcription for this line is known to be: ${fewShotHint}\nOutput this exact text.`;
+    userText = `Output exactly: ${fewShotHint}`;
   }
   if (correctionContext) {
     userText += correctionContext;
@@ -233,7 +235,14 @@ async function ocrSingleLine(
 
   const response = await stream.finalMessage();
   const textBlock = response.content.find((b: { type: string }) => b.type === "text");
-  const text = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
+  let text = textBlock && "text" in textBlock ? (textBlock.text as string).trim() : "";
+
+  // Strip any English text the model might have output (descriptions, explanations)
+  // Keep only Hebrew, punctuation, spaces, and [?]
+  if (/[a-zA-Z]{3,}/.test(text) && !/[\u0590-\u05FF]/.test(text)) {
+    // Entirely English response — model described the image instead of transcribing
+    text = "[?]";
+  }
 
   return {
     text,
