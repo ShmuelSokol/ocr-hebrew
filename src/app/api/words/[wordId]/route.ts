@@ -62,3 +62,46 @@ export async function PATCH(
 
   return NextResponse.json({ success: true });
 }
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { wordId: string } }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const word = await prisma.oCRWord.findUnique({
+    where: { id: params.wordId },
+    include: { line: true },
+  });
+
+  if (!word) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  await prisma.oCRWord.delete({ where: { id: params.wordId } });
+
+  // Re-index remaining words
+  const remaining = await prisma.oCRWord.findMany({
+    where: { lineId: word.lineId },
+    orderBy: { wordIndex: "asc" },
+  });
+  for (let i = 0; i < remaining.length; i++) {
+    if (remaining[i].wordIndex !== i) {
+      await prisma.oCRWord.update({
+        where: { id: remaining[i].id },
+        data: { wordIndex: i },
+      });
+    }
+  }
+
+  // Update line text
+  const lineCorrected = remaining.map((w) => w.correctedText || w.rawText).join(" ");
+  await prisma.oCRLine.update({
+    where: { id: word.lineId },
+    data: {
+      correctedText: lineCorrected,
+      rawText: remaining.map((w) => w.rawText).join(" "),
+    },
+  });
+
+  return NextResponse.json({ success: true });
+}

@@ -57,10 +57,21 @@ export default function EditorPage() {
   const [detectedLines, setDetectedLines] = useState<DetectedLine[]>([]);
   const [trainingTexts, setTrainingTexts] = useState<Record<number, string>>({});
   const [detectingLines, setDetectingLines] = useState(false);
+  // Word-by-word review
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewLineIdx, setReviewLineIdx] = useState(0);
+  const [reviewWordIdx, setReviewWordIdx] = useState(0);
+  const [reviewEditValue, setReviewEditValue] = useState("");
+  const [reviewEditing, setReviewEditing] = useState(false);
+  // Add word
+  const [addingWordLineId, setAddingWordLineId] = useState<string | null>(null);
+  const [addingWordAfterIdx, setAddingWordAfterIdx] = useState<number>(-1);
+  const [addWordValue, setAddWordValue] = useState("");
 
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const reviewInputRef = useRef<HTMLInputElement>(null);
 
   const loadResult = useCallback(async () => {
     setLoading(true);
@@ -77,7 +88,6 @@ export default function EditorPage() {
     }
     if (resultData?.id) {
       setResult(resultData);
-      // Count how many words have been manually corrected (different from raw)
       const corrected = resultData.lines.reduce(
         (sum: number, line: Line) =>
           sum +
@@ -96,30 +106,24 @@ export default function EditorPage() {
     if (status === "authenticated") loadResult();
   }, [status, router, loadResult]);
 
-  // Timer for OCR processing
   useEffect(() => {
     if (ocrRunning) {
       setElapsedSeconds(0);
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds((s) => s + 1);
-      }, 1000);
+      timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
     } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [ocrRunning]);
 
-  // Show re-run banner when correction threshold is reached
   useEffect(() => {
-    if (correctionCount >= RERUN_THRESHOLD && result) {
-      setShowRerunBanner(true);
-    }
+    if (correctionCount >= RERUN_THRESHOLD && result) setShowRerunBanner(true);
   }, [correctionCount, result]);
+
+  // Focus review input when entering edit mode
+  useEffect(() => {
+    if (reviewEditing && reviewInputRef.current) reviewInputRef.current.focus();
+  }, [reviewEditing]);
 
   function onImageLoad() {
     if (imageRef.current) {
@@ -131,11 +135,7 @@ export default function EditorPage() {
   async function startTrainingMode() {
     setDetectingLines(true);
     const res = await fetch(`/api/files/${fileId}/detect-lines`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      setDetectedLines(data.lines);
-      setTrainingMode(true);
-    }
+    if (res.ok) { const data = await res.json(); setDetectedLines(data.lines); setTrainingMode(true); }
     setDetectingLines(false);
   }
 
@@ -147,62 +147,40 @@ export default function EditorPage() {
   async function confirmAllLines() {
     if (!result) return;
     for (const line of result.lines) {
-      const hasUnconfirmed = line.words.some((w) => !w.correctedText);
-      if (hasUnconfirmed) {
+      if (line.words.some((w) => !w.correctedText))
         await fetch(`/api/lines/${line.id}/confirm`, { method: "POST" });
-      }
     }
     await loadResult();
   }
 
-  function buildFewShotLines(): { lineIndex: number; text: string }[] {
+  function buildFewShotLines() {
     const lines: { lineIndex: number; text: string }[] = [];
-
-    // Add training-mode lines (user typed before first OCR)
     for (const [idx, text] of Object.entries(trainingTexts)) {
-      if (text.trim()) {
-        lines.push({ lineIndex: parseInt(idx), text: text.trim() });
-      }
+      if (text.trim()) lines.push({ lineIndex: parseInt(idx), text: text.trim() });
     }
-
-    // Add corrected lines from previous OCR result (for re-runs)
     if (result) {
       for (const line of result.lines) {
-        const alreadyAdded = lines.some((l) => l.lineIndex === line.lineIndex);
-        if (alreadyAdded) continue;
-        // Include lines where all words have been confirmed/corrected
-        const allConfirmed = line.words.every((w) => w.correctedText);
-        if (allConfirmed) {
-          const correctedText = line.words
-            .map((w) => w.correctedText || w.rawText)
-            .join(" ");
-          lines.push({ lineIndex: line.lineIndex, text: correctedText });
+        if (lines.some((l) => l.lineIndex === line.lineIndex)) continue;
+        if (line.words.every((w) => w.correctedText)) {
+          lines.push({ lineIndex: line.lineIndex, text: line.words.map((w) => w.correctedText || w.rawText).join(" ") });
         }
       }
     }
-
     return lines;
   }
 
   async function runOCR() {
     setOcrRunning(true);
     setShowRerunBanner(false);
+    setReviewMode(false);
     const fewShotLines = buildFewShotLines();
     const res = await fetch(`/api/files/${fileId}/ocr`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fewShotLines: fewShotLines.length > 0 ? fewShotLines : undefined,
-      }),
+      body: JSON.stringify({ fewShotLines: fewShotLines.length > 0 ? fewShotLines : undefined }),
     });
-    if (res.ok) {
-      setTrainingMode(false);
-      setCorrectionCount(0);
-      await loadResult();
-    } else {
-      const err = await res.json();
-      alert("OCR Error: " + (err.error || "Unknown error"));
-    }
+    if (res.ok) { setTrainingMode(false); setCorrectionCount(0); await loadResult(); }
+    else { const err = await res.json(); alert("OCR Error: " + (err.error || "Unknown error")); }
     setOcrRunning(false);
   }
 
@@ -212,9 +190,7 @@ export default function EditorPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contrast: 1.3, brightness: 10, sharpen: true, grayscale: true }),
     });
-    if (res.ok && imageRef.current) {
-      imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
-    }
+    if (res.ok && imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${Date.now()}`;
   }
 
   async function saveWord(wordId: string, corrected: string) {
@@ -227,213 +203,325 @@ export default function EditorPage() {
     await loadResult();
   }
 
+  async function deleteWord(wordId: string) {
+    if (!confirm("Delete this word?")) return;
+    await fetch(`/api/words/${wordId}`, { method: "DELETE" });
+    await loadResult();
+  }
+
+  async function addWord(lineId: string, afterWordIndex: number, text: string) {
+    if (!text.trim()) return;
+    await fetch(`/api/lines/${lineId}/words`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.trim(), afterWordIndex }),
+    });
+    setAddingWordLineId(null);
+    setAddWordValue("");
+    await loadResult();
+  }
+
   function startEdit(word: Word) {
     setEditingWord(word.id);
     setEditValue(word.correctedText || word.rawText);
   }
 
+  // === Review mode helpers ===
+  function startReview() {
+    setReviewLineIdx(0);
+    setReviewWordIdx(0);
+    setReviewEditing(false);
+    setReviewMode(true);
+  }
+
+  const reviewLine = result?.lines[reviewLineIdx];
+  const reviewWord = reviewLine?.words[reviewWordIdx];
+  const totalWords = result ? result.lines.reduce((s, l) => s + l.words.length, 0) : 0;
+  const currentWordNum = result
+    ? result.lines.slice(0, reviewLineIdx).reduce((s, l) => s + l.words.length, 0) + reviewWordIdx + 1
+    : 0;
+
+  function reviewNext() {
+    if (!result) return;
+    setReviewEditing(false);
+    const line = result.lines[reviewLineIdx];
+    if (reviewWordIdx < line.words.length - 1) {
+      setReviewWordIdx(reviewWordIdx + 1);
+    } else if (reviewLineIdx < result.lines.length - 1) {
+      setReviewLineIdx(reviewLineIdx + 1);
+      setReviewWordIdx(0);
+    }
+  }
+
+  function reviewPrev() {
+    if (!result) return;
+    setReviewEditing(false);
+    if (reviewWordIdx > 0) {
+      setReviewWordIdx(reviewWordIdx - 1);
+    } else if (reviewLineIdx > 0) {
+      const prevLine = result.lines[reviewLineIdx - 1];
+      setReviewLineIdx(reviewLineIdx - 1);
+      setReviewWordIdx(prevLine.words.length - 1);
+    }
+  }
+
+  async function reviewConfirm() {
+    if (!reviewWord) return;
+    const text = reviewWord.correctedText || reviewWord.rawText;
+    await saveWord(reviewWord.id, text);
+    reviewNext();
+  }
+
+  async function reviewSave() {
+    if (!reviewWord) return;
+    await saveWord(reviewWord.id, reviewEditValue);
+    setReviewEditing(false);
+    reviewNext();
+  }
+
+  async function reviewDelete() {
+    if (!reviewWord) return;
+    await fetch(`/api/words/${reviewWord.id}`, { method: "DELETE" });
+    await loadResult();
+    // Adjust index if needed
+    if (result) {
+      const line = result.lines[reviewLineIdx];
+      if (line && reviewWordIdx >= line.words.length - 1 && reviewWordIdx > 0) {
+        setReviewWordIdx(reviewWordIdx - 1);
+      }
+    }
+  }
+
+  // Keyboard nav for review mode
+  useEffect(() => {
+    if (!reviewMode || reviewEditing) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); reviewNext(); }
+      else if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); reviewPrev(); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        setReviewEditValue(reviewWord?.correctedText || reviewWord?.rawText || "");
+        setReviewEditing(true);
+      }
+      else if (e.key === " ") { e.preventDefault(); reviewConfirm(); }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewMode, reviewEditing, reviewLineIdx, reviewWordIdx, result]);
+
   const trainingLineCount = Object.values(trainingTexts).filter((t) => t.trim()).length;
 
-  // Render training mode: detected lines overlaid on image with text inputs
+  const scale = imageDisplayWidth && imageRef.current
+    ? imageDisplayWidth / imageRef.current.naturalWidth
+    : 1;
+
+  // === Render training mode ===
   function renderTraining() {
     if (!detectedLines.length || !imageNaturalHeight) return null;
-
     return (
       <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={`/api/files/${fileId}/image`}
-          alt="Original"
-          className="w-full block"
-        />
+        <img src={`/api/files/${fileId}/image`} alt="Original" className="w-full block" />
         {detectedLines.map((line, i) => (
-          <div
-            key={`train-${i}`}
-            className="absolute left-0 right-0 flex items-center gap-1 px-2"
-            dir="rtl"
-            style={{
-              top: `${(line.yTop / imageNaturalHeight) * 100}%`,
-              minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
-            }}
-          >
-            <span className="text-xs bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center shrink-0">
-              {i + 1}
-            </span>
-            <input
-              type="text"
-              dir="rtl"
-              placeholder={i < 3 ? "Type this line..." : ""}
-              value={trainingTexts[i] || ""}
-              onChange={(e) =>
-                setTrainingTexts((prev) => ({ ...prev, [i]: e.target.value }))
-              }
-              className={`flex-1 border rounded px-2 py-1 text-sm text-right ${
-                trainingTexts[i]?.trim()
-                  ? "bg-green-50/90 border-green-400"
-                  : "bg-white/80 border-gray-300"
-              }`}
-            />
+          <div key={`train-${i}`} className="absolute left-0 right-0 flex items-center gap-1 px-2" dir="rtl"
+            style={{ top: `${(line.yTop / imageNaturalHeight) * 100}%`, minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%` }}>
+            <span className="text-xs bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center shrink-0">{i + 1}</span>
+            <input type="text" dir="rtl" placeholder={i < 3 ? "Type this line..." : ""} value={trainingTexts[i] || ""}
+              onChange={(e) => setTrainingTexts((prev) => ({ ...prev, [i]: e.target.value }))}
+              className={`flex-1 border rounded px-2 py-1 text-sm text-right ${trainingTexts[i]?.trim() ? "bg-green-50/90 border-green-400" : "bg-white/80 border-gray-300"}`} />
           </div>
         ))}
       </div>
     );
   }
 
-  // Render line-by-line: handwritten image strip, then OCR text below it
+  // === Render word add button ===
+  function renderAddBtn(lineId: string, afterIdx: number) {
+    const isAdding = addingWordLineId === lineId && addingWordAfterIdx === afterIdx;
+    if (isAdding) {
+      return (
+        <span className="inline-flex items-center gap-1">
+          <input type="text" dir="rtl" value={addWordValue} onChange={(e) => setAddWordValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addWord(lineId, afterIdx, addWordValue); if (e.key === "Escape") { setAddingWordLineId(null); setAddWordValue(""); } }}
+            className="border-2 border-purple-500 rounded px-1 py-0.5 text-base w-24 text-right bg-white" autoFocus placeholder="word..." />
+          <button onClick={() => addWord(lineId, afterIdx, addWordValue)} className="text-purple-600 text-sm font-bold">&#10003;</button>
+          <button onClick={() => { setAddingWordLineId(null); setAddWordValue(""); }} className="text-gray-400 text-sm font-bold">&#10005;</button>
+        </span>
+      );
+    }
+    return (
+      <button onClick={() => { setAddingWordLineId(lineId); setAddingWordAfterIdx(afterIdx); setAddWordValue(""); }}
+        className="text-gray-300 hover:text-purple-500 text-lg leading-none px-0.5 transition-colors" title="Add word here">+</button>
+    );
+  }
+
+  // === Render line-by-line view ===
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
-
-    const scale = imageDisplayWidth
-      ? imageDisplayWidth / (imageRef.current?.naturalWidth || imageDisplayWidth)
-      : 1;
 
     return (
       <div style={{ width: imageDisplayWidth || "100%" }}>
         {result.lines.map((line, i) => {
           const allConfirmed = line.words.every((w) => w.correctedText);
           const lineHeight = (line.yBottom - line.yTop) * scale;
-          // Add gap image before first line, or between lines
-          const prevBottom = i > 0 ? result.lines[i - 1].yBottom : 0;
-          const gapHeight = (line.yTop - prevBottom) * scale;
 
           return (
             <div key={line.id}>
-              {/* Gap before this line */}
-              {gapHeight > 2 && !showOverlay && (
-                <div
-                  style={{
-                    width: "100%",
-                    height: gapHeight,
-                    backgroundImage: `url(/api/files/${fileId}/image)`,
-                    backgroundPosition: `0 ${-prevBottom * scale}px`,
-                    backgroundSize: `${imageDisplayWidth}px auto`,
-                    backgroundRepeat: "no-repeat",
-                  }}
-                />
-              )}
+              {/* Handwritten image strip */}
+              <div style={{
+                width: "100%", height: Math.max(lineHeight, 30),
+                backgroundImage: `url(/api/files/${fileId}/image)`,
+                backgroundPosition: `0 ${-line.yTop * scale}px`,
+                backgroundSize: `${imageDisplayWidth}px auto`,
+                backgroundRepeat: "no-repeat",
+              }} />
 
-              {/* Handwritten image strip for this line */}
-              <div
-                style={{
-                  width: "100%",
-                  height: Math.max(lineHeight, 30),
-                  backgroundImage: `url(/api/files/${fileId}/image)`,
-                  backgroundPosition: `0 ${-line.yTop * scale}px`,
-                  backgroundSize: `${imageDisplayWidth}px auto`,
-                  backgroundRepeat: "no-repeat",
-                }}
-              />
-
-              {/* OCR text strip below the image strip */}
+              {/* OCR text strip */}
               {showOverlay && (
-                <div
-                  className={`px-3 py-2 flex items-start gap-2 border-b-2 ${
-                    allConfirmed
-                      ? "bg-green-50 border-green-300"
-                      : "bg-gray-50 border-gray-200"
-                  }`}
-                  dir="rtl"
-                >
-                  <div className="flex flex-wrap gap-1 text-base leading-relaxed flex-1">
+                <div className={`px-3 py-2 flex items-start gap-2 border-b-2 ${allConfirmed ? "bg-green-50 border-green-300" : "bg-gray-50 border-gray-200"}`} dir="rtl">
+                  <div className="flex flex-wrap items-center gap-0.5 text-base leading-relaxed flex-1">
+                    {/* Add button before first word */}
+                    {renderAddBtn(line.id, -1)}
                     {line.words.map((word) => {
-                      const isCorrected =
-                        word.correctedText && word.correctedText !== word.rawText;
+                      const isCorrected = word.correctedText && word.correctedText !== word.rawText;
                       const isEditing = editingWord === word.id;
                       const displayText = word.correctedText || word.rawText;
 
-                      if (isEditing) {
-                        return (
-                          <span key={word.id} className="inline-flex items-center gap-1">
-                            <input
-                              type="text"
-                              dir="rtl"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") saveWord(word.id, editValue);
-                                if (e.key === "Escape") setEditingWord(null);
-                              }}
-                              className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white"
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => saveWord(word.id, editValue)}
-                              className="text-green-600 text-sm font-bold"
-                            >
-                              &#10003;
-                            </button>
-                            <button
-                              onClick={() => setEditingWord(null)}
-                              className="text-red-500 text-sm font-bold"
-                            >
-                              &#10005;
-                            </button>
-                          </span>
-                        );
-                      }
-
                       return (
-                        <span
-                          key={word.id}
-                          onClick={() => startEdit(word)}
-                          className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
-                            isCorrected
-                              ? "bg-green-100 border border-green-300 font-medium"
-                              : "hover:underline"
-                          } ${
-                            word.rawText === "[?]"
-                              ? "bg-red-100 text-red-500 border border-red-300"
-                              : ""
-                          }`}
-                          title={
-                            isCorrected
-                              ? `Original: ${word.rawText}`
-                              : "Click to correct"
-                          }
-                        >
-                          {displayText}
+                        <span key={word.id} className="inline-flex items-center">
+                          {isEditing ? (
+                            <span className="inline-flex items-center gap-1">
+                              <input type="text" dir="rtl" value={editValue} onChange={(e) => setEditValue(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") saveWord(word.id, editValue); if (e.key === "Escape") setEditingWord(null); }}
+                                className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white" autoFocus />
+                              <button onClick={() => saveWord(word.id, editValue)} className="text-green-600 text-sm font-bold">&#10003;</button>
+                              <button onClick={() => setEditingWord(null)} className="text-red-500 text-sm font-bold">&#10005;</button>
+                              <button onClick={() => deleteWord(word.id)} className="text-red-400 text-xs hover:text-red-600" title="Delete word">&#128465;</button>
+                            </span>
+                          ) : (
+                            <span onClick={() => startEdit(word)}
+                              className={`cursor-pointer px-1.5 py-0.5 rounded transition-all hover:bg-blue-100 hover:shadow ${
+                                isCorrected ? "bg-green-100 border border-green-300 font-medium" : "hover:underline"
+                              } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
+                              title={isCorrected ? `Original: ${word.rawText}` : "Click to correct"}>
+                              {displayText}
+                            </span>
+                          )}
+                          {/* Add button after this word */}
+                          {renderAddBtn(line.id, word.wordIndex)}
                         </span>
                       );
                     })}
                   </div>
-                  {!allConfirmed && (
-                    <button
-                      onClick={() => confirmLine(line.id)}
-                      className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5"
-                      title="Confirm this line is correct"
-                    >
-                      Confirm
-                    </button>
-                  )}
-                  {allConfirmed && (
-                    <span className="text-xs text-green-600 whitespace-nowrap mt-1">
-                      &#10003;
-                    </span>
+                  {!allConfirmed ? (
+                    <button onClick={() => confirmLine(line.id)}
+                      className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5" title="Confirm this line">Confirm</button>
+                  ) : (
+                    <span className="text-xs text-green-600 whitespace-nowrap mt-1">&#10003;</span>
                   )}
                 </div>
               )}
             </div>
           );
         })}
-        {/* Remaining image after last line */}
+        {/* Remaining image */}
         {(() => {
-          const lastLine = result.lines[result.lines.length - 1];
-          const remainingHeight =
-            (imageNaturalHeight - lastLine.yBottom) * scale;
-          if (remainingHeight <= 2) return null;
-          return (
-            <div
-              style={{
-                width: "100%",
-                height: remainingHeight,
-                backgroundImage: `url(/api/files/${fileId}/image)`,
-                backgroundPosition: `0 ${-lastLine.yBottom * scale}px`,
-                backgroundSize: `${imageDisplayWidth}px auto`,
-                backgroundRepeat: "no-repeat",
-              }}
-            />
-          );
+          const last = result.lines[result.lines.length - 1];
+          const rem = (imageNaturalHeight - last.yBottom) * scale;
+          if (rem <= 2) return null;
+          return <div style={{ width: "100%", height: rem, backgroundImage: `url(/api/files/${fileId}/image)`, backgroundPosition: `0 ${-last.yBottom * scale}px`, backgroundSize: `${imageDisplayWidth}px auto`, backgroundRepeat: "no-repeat" }} />;
         })()}
+      </div>
+    );
+  }
+
+  // === Render review mode ===
+  function renderReview() {
+    if (!result || !reviewLine || !reviewWord) return null;
+
+    const lineHeight = (reviewLine.yBottom - reviewLine.yTop) * scale;
+
+    return (
+      <div className="p-4 space-y-4">
+        {/* Progress bar */}
+        <div className="flex items-center justify-between text-sm text-gray-500">
+          <span>Word {currentWordNum} of {totalWords}</span>
+          <span>Line {reviewLineIdx + 1} of {result.lines.length}</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-1.5">
+          <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(currentWordNum / totalWords) * 100}%` }} />
+        </div>
+
+        {/* Image strip for this line (larger) */}
+        <div className="border rounded-lg overflow-hidden">
+          <div style={{
+            width: "100%", height: Math.max(lineHeight * 1.5, 60),
+            backgroundImage: `url(/api/files/${fileId}/image)`,
+            backgroundPosition: `0 ${-reviewLine.yTop * scale}px`,
+            backgroundSize: `${imageDisplayWidth}px auto`,
+            backgroundRepeat: "no-repeat",
+          }} />
+        </div>
+
+        {/* Full line text with current word highlighted */}
+        <div className="flex flex-wrap gap-1 text-lg leading-relaxed justify-end p-3 bg-gray-50 rounded-lg border" dir="rtl">
+          {reviewLine.words.map((w, wi) => (
+            <span key={w.id} className={`px-2 py-1 rounded ${wi === reviewWordIdx
+              ? "bg-blue-500 text-white font-bold text-xl ring-2 ring-blue-300"
+              : w.correctedText ? "bg-green-100 text-green-800" : "text-gray-600"}`}>
+              {w.correctedText || w.rawText}
+            </span>
+          ))}
+        </div>
+
+        {/* Focused word card */}
+        <div className="bg-white border-2 border-blue-200 rounded-xl p-6 text-center space-y-4">
+          <div className="text-3xl font-bold" dir="rtl">{reviewWord.correctedText || reviewWord.rawText}</div>
+          {reviewWord.correctedText && reviewWord.correctedText !== reviewWord.rawText && (
+            <div className="text-sm text-gray-400">Original OCR: <span className="font-mono">{reviewWord.rawText}</span></div>
+          )}
+
+          {reviewEditing ? (
+            <div className="flex items-center justify-center gap-2">
+              <input ref={reviewInputRef} type="text" dir="rtl" value={reviewEditValue}
+                onChange={(e) => setReviewEditValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") reviewSave(); if (e.key === "Escape") setReviewEditing(false); }}
+                className="border-2 border-blue-500 rounded px-3 py-2 text-xl text-right w-48 bg-white" />
+              <button onClick={reviewSave} className="bg-green-500 text-white px-4 py-2 rounded font-medium hover:bg-green-600">Save</button>
+              <button onClick={() => setReviewEditing(false)} className="text-gray-500 px-3 py-2 hover:text-gray-700">Cancel</button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-3">
+              <button onClick={reviewConfirm}
+                className="bg-green-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-600 text-sm">
+                &#10003; Correct (Space)
+              </button>
+              <button onClick={() => { setReviewEditValue(reviewWord.correctedText || reviewWord.rawText); setReviewEditing(true); }}
+                className="bg-blue-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-600 text-sm">
+                &#9998; Edit (Enter)
+              </button>
+              <button onClick={reviewDelete}
+                className="bg-red-100 text-red-600 px-4 py-2 rounded-lg font-medium hover:bg-red-200 text-sm">
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Navigation */}
+        <div className="flex items-center justify-between">
+          <button onClick={reviewPrev} disabled={reviewLineIdx === 0 && reviewWordIdx === 0}
+            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">
+            &rarr; Previous
+          </button>
+          <div className="text-xs text-gray-400">Arrow keys to navigate, Space to confirm, Enter to edit</div>
+          <button onClick={reviewNext}
+            disabled={reviewLineIdx === result.lines.length - 1 && reviewWordIdx === reviewLine.words.length - 1}
+            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">
+            Next &larr;
+          </button>
+        </div>
       </div>
     );
   }
@@ -445,242 +533,117 @@ export default function EditorPage() {
       {/* Header */}
       <div className="flex justify-between items-center mb-4">
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="text-blue-600 hover:underline text-sm"
-          >
-            &larr; Dashboard
-          </button>
+          <button onClick={() => router.push("/dashboard")} className="text-blue-600 hover:underline text-sm">&larr; Dashboard</button>
           <h1 className="text-xl font-bold">{filename}</h1>
-          <span
-            className={`px-2 py-0.5 rounded text-xs ${
-              fileStatus === "completed"
-                ? "bg-green-100 text-green-700"
-                : fileStatus === "processing"
-                ? "bg-yellow-100 text-yellow-700"
-                : "bg-gray-100 text-gray-600"
-            }`}
-          >
-            {fileStatus}
-          </span>
+          <span className={`px-2 py-0.5 rounded text-xs ${fileStatus === "completed" ? "bg-green-100 text-green-700" : fileStatus === "processing" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{fileStatus}</span>
         </div>
         <div className="flex gap-2">
           {result && (
             <>
-              <button
-                onClick={confirmAllLines}
-                className="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600"
-              >
-                Confirm All Lines
-              </button>
-              <button
-                onClick={() =>
-                  window.open(`/api/files/${fileId}/export?format=txt`, "_blank")
-                }
-                className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
-              >
-                Export TXT
-              </button>
-              <button
-                onClick={() =>
-                  window.open(`/api/files/${fileId}/export?format=json`, "_blank")
-                }
-                className="bg-gray-600 text-white px-3 py-1 rounded text-sm hover:bg-gray-700"
-              >
-                Export JSON
-              </button>
+              {!reviewMode && (
+                <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1 rounded text-sm hover:bg-purple-600">
+                  Review Words
+                </button>
+              )}
+              {reviewMode && (
+                <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">
+                  Exit Review
+                </button>
+              )}
+              <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600">Confirm All</button>
+              <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">Export TXT</button>
             </>
           )}
         </div>
       </div>
 
       {/* Re-run suggestion banner */}
-      {showRerunBanner && (
+      {showRerunBanner && !reviewMode && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-4 flex items-center justify-between">
           <div>
-            <p className="font-medium text-amber-800">
-              You&apos;ve corrected {correctionCount} words
-            </p>
-            <p className="text-sm text-amber-600">
-              Re-running OCR will use your corrections as training data for better accuracy.
-            </p>
+            <p className="font-medium text-amber-800">You&apos;ve corrected {correctionCount} words</p>
+            <p className="text-sm text-amber-600">Re-running OCR will use your corrections as training data for better accuracy.</p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={() => setShowRerunBanner(false)}
-              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
-            >
-              Dismiss
-            </button>
-            <button
-              onClick={runOCR}
-              disabled={ocrRunning}
-              className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
-            >
-              Re-run OCR with corrections
-            </button>
+            <button onClick={() => setShowRerunBanner(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Dismiss</button>
+            <button onClick={runOCR} disabled={ocrRunning} className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50">Re-run OCR</button>
           </div>
         </div>
       )}
 
-      {/* OCR Controls */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
-        {/* Training mode toggle */}
-        {!result && !trainingMode && (
-          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm text-blue-800 mb-2">
-              <strong>Tip:</strong> Type the first 2-3 lines manually to teach the OCR
-              how this writer forms letters. This dramatically improves accuracy.
-            </p>
-            <button
-              onClick={startTrainingMode}
-              disabled={detectingLines}
-              className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-            >
-              {detectingLines ? "Detecting lines..." : "Start Training Mode"}
-            </button>
-          </div>
-        )}
-
-        {/* Training mode status */}
-        {trainingMode && (
-          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm text-blue-800">
-              <strong>Training Mode:</strong> Type the text for each line you can read.
-              The first 2-3 lines are most helpful.{" "}
-              {trainingLineCount > 0 && (
-                <span className="text-green-700 font-medium">
-                  {trainingLineCount} line{trainingLineCount > 1 ? "s" : ""} entered
-                </span>
-              )}
-            </p>
-            <div className="flex gap-2 mt-2">
-              <button
-                onClick={() => {
-                  setTrainingMode(false);
-                  setDetectedLines([]);
-                  setTrainingTexts({});
-                }}
-                className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 border rounded"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={runOCR}
-                disabled={ocrRunning || trainingLineCount === 0}
-                className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-              >
-                Run OCR with {trainingLineCount} training line
-                {trainingLineCount !== 1 ? "s" : ""}
+      {/* OCR Controls (hidden during review) */}
+      {!reviewMode && (
+        <div className="bg-white rounded-lg shadow p-4 mb-6">
+          {!result && !trainingMode && (
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-800 mb-2"><strong>Tip:</strong> Type the first 2-3 lines manually to teach the OCR how this writer forms letters.</p>
+              <button onClick={startTrainingMode} disabled={detectingLines} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {detectingLines ? "Detecting lines..." : "Start Training Mode"}
               </button>
             </div>
+          )}
+          {trainingMode && (
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-800"><strong>Training Mode:</strong> Type the text for each line. {trainingLineCount > 0 && <span className="text-green-700 font-medium">{trainingLineCount} line{trainingLineCount > 1 ? "s" : ""} entered</span>}</p>
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => { setTrainingMode(false); setDetectedLines([]); setTrainingTexts({}); }} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 border rounded">Cancel</button>
+                <button onClick={runOCR} disabled={ocrRunning || trainingLineCount === 0} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                  Run OCR with {trainingLineCount} training line{trainingLineCount !== 1 ? "s" : ""}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300" title="Enhance image">Enhance Image</button>
+            {!trainingMode && (
+              <button onClick={runOCR} disabled={ocrRunning}
+                className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}>
+                {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
+              </button>
+            )}
           </div>
-        )}
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={preprocessImage}
-            className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300"
-            title="Enhance contrast, sharpen, and convert to grayscale for better OCR"
-          >
-            Enhance Image
-          </button>
-          {!trainingMode && (
-            <button
-              onClick={runOCR}
-              disabled={ocrRunning}
-              className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${
-                result
-                  ? "bg-amber-500 hover:bg-amber-600"
-                  : "bg-blue-600 hover:bg-blue-700"
-              }`}
-            >
-              {ocrRunning
-                ? "Processing..."
-                : result
-                ? "Re-run OCR"
-                : "Run OCR"}
-            </button>
+          {ocrRunning && (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center justify-between text-sm text-gray-500">
+                <div className="flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                  <span>Processing image...</span>
+                </div>
+                <span className="tabular-nums font-mono">{Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
+              </div>
+              <p className="text-xs text-gray-400">{elapsedSeconds < 15 ? "Detecting lines..." : elapsedSeconds < 45 ? "Reading handwriting..." : "Almost done..."}</p>
+            </div>
           )}
         </div>
-        {ocrRunning && (
-          <div className="mt-3 space-y-2">
-            <div className="flex items-center justify-between text-sm text-gray-500">
-              <div className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-                <span>Processing image...</span>
-              </div>
-              <span className="tabular-nums font-mono">
-                {Math.floor(elapsedSeconds / 60)}:
-                {String(elapsedSeconds % 60).padStart(2, "0")}
-              </span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-              <div
-                className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out"
-                style={{
-                  width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%`,
-                }}
-              />
-            </div>
-            <p className="text-xs text-gray-400">
-              {elapsedSeconds < 15
-                ? "Detecting lines..."
-                : elapsedSeconds < 45
-                ? "Reading handwriting..."
-                : "Almost done..."}
-            </p>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* Main content: image with overlay */}
-      <div
-        className="bg-white rounded-lg shadow overflow-hidden"
-        ref={containerRef}
-      >
-        {result && (
+      {/* Main content */}
+      <div className="bg-white rounded-lg shadow overflow-hidden" ref={containerRef}>
+        {result && !reviewMode && (
           <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b">
             <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowOverlay(!showOverlay)}
-                className={`text-xs px-3 py-1 rounded font-medium ${
-                  showOverlay
-                    ? "bg-blue-100 text-blue-700 border border-blue-300"
-                    : "bg-gray-200 text-gray-600"
-                }`}
-              >
-                {showOverlay ? "Hide Overlay" : "Show Overlay"}
+              <button onClick={() => setShowOverlay(!showOverlay)}
+                className={`text-xs px-3 py-1 rounded font-medium ${showOverlay ? "bg-blue-100 text-blue-700 border border-blue-300" : "bg-gray-200 text-gray-600"}`}>
+                {showOverlay ? "Hide Text" : "Show Text"}
               </button>
-              {correctionCount > 0 && (
-                <span className="text-xs text-gray-500">
-                  {correctionCount} correction
-                  {correctionCount !== 1 ? "s" : ""}
-                </span>
-              )}
+              {correctionCount > 0 && <span className="text-xs text-gray-500">{correctionCount} correction{correctionCount !== 1 ? "s" : ""}</span>}
             </div>
           </div>
         )}
         <div className="overflow-auto">
-          {/* Hidden image for measuring natural dimensions */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            ref={imageRef}
-            src={`/api/files/${fileId}/image`}
-            alt=""
-            className="w-full invisible h-0"
-            onLoad={onImageLoad}
-          />
-          {trainingMode && imageNaturalHeight > 0 ? (
+          <img ref={imageRef} src={`/api/files/${fileId}/image`} alt="" className="w-full invisible h-0" onLoad={onImageLoad} />
+          {reviewMode ? (
+            renderReview()
+          ) : trainingMode && imageNaturalHeight > 0 ? (
             renderTraining()
           ) : !result ? (
             <div className="p-4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={`/api/files/${fileId}/image`}
-                alt="Original"
-                className="w-full"
-              />
+              <img src={`/api/files/${fileId}/image`} alt="Original" className="w-full" />
             </div>
           ) : imageNaturalHeight > 0 ? (
             renderOverlay()
@@ -691,20 +654,12 @@ export default function EditorPage() {
       </div>
 
       {/* Legend */}
-      {result && (
-        <div className="mt-4 flex gap-4 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 bg-yellow-50 border border-yellow-200 rounded"></span>
-            OCR text (click to edit)
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 bg-green-100 border border-green-300 rounded"></span>
-            Corrected word
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 bg-red-100 border border-red-300 rounded"></span>
-            Unclear word [?]
-          </span>
+      {result && !reviewMode && (
+        <div className="mt-4 flex flex-wrap gap-4 text-xs text-gray-500">
+          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-gray-50 border border-gray-200 rounded"></span>OCR text (click to edit)</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-green-100 border border-green-300 rounded"></span>Corrected/confirmed</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-red-100 border border-red-300 rounded"></span>Unclear [?]</span>
+          <span className="flex items-center gap-1"><span className="text-gray-300 text-lg leading-none">+</span> Add word</span>
         </div>
       )}
     </div>
