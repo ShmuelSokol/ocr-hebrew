@@ -12,9 +12,9 @@ allowed-tools: Bash, Read, Write, Edit
 - **Region**: us-east-1
 - **Organization ID**: dkymffxtykmlmurzuzqm
 - **Database Host**: db.ushngszdltlctmqlwgot.supabase.co
-- **Database Password**: OcrHebrew2026!Secure
-- **Pooler Connection (DATABASE_URL)**: `postgresql://postgres.ushngszdltlctmqlwgot:OcrHebrew2026!Secure@aws-0-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true`
-- **Direct Connection (DIRECT_URL)**: `postgresql://postgres:OcrHebrew2026!Secure@db.ushngszdltlctmqlwgot.supabase.co:5432/postgres`
+- **Database Password**: testpass123abc
+- **Pooler Connection (DATABASE_URL)**: `postgresql://postgres.ushngszdltlctmqlwgot:testpass123abc@aws-1-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true`
+- **Direct Connection (DIRECT_URL)**: `postgresql://postgres:testpass123abc@db.ushngszdltlctmqlwgot.supabase.co:5432/postgres`
 
 ## Access Token
 Use header: `Authorization: Bearer sbp_f5f8c89c1dfac1e67b7d83e6493056d39f0520e9`
@@ -50,7 +50,7 @@ curl -s -X POST "https://api.supabase.com/v1/projects/ushngszdltlctmqlwgot/datab
 ### Push Prisma schema to Supabase
 ```bash
 cd "/Users/shmuelsokol/Desktop/CURSOR AI/ocr-hebrew/web"
-DATABASE_URL="postgresql://postgres.ushngszdltlctmqlwgot:OcrHebrew2026!Secure@aws-0-us-east-1.pooler.supabase.com:5432/postgres" npx prisma db push
+DATABASE_URL="postgresql://postgres.ushngszdltlctmqlwgot:testpass123abc@aws-1-us-east-1.pooler.supabase.com:5432/postgres" npx prisma db push
 ```
 
 ## Other Supabase Projects
