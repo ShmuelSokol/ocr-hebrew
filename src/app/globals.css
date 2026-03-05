@@ -24,4 +24,7 @@ body {
   .text-balance {
     text-wrap: balance;
   }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }

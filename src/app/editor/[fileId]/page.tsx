@@ -544,7 +544,7 @@ export default function EditorPage() {
                         </div>
 
                         {/* OCR text */}
-                        <div className={`w-full text-center px-3 py-2 text-base font-medium border-t ${
+                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium border-t ${
                           isSelected ? "bg-orange-100" :
                           isCorrected ? "bg-green-50" : ""
                         }`} dir="rtl">
@@ -569,71 +569,82 @@ export default function EditorPage() {
   function renderReview() {
     if (!result || !reviewLine || !reviewWord) return null;
     const imgEl = imageRef.current;
+    const isFirst = reviewLineIdx === 0 && reviewWordIdx === 0;
+    const isLast = reviewLineIdx === result.lines.length - 1 && reviewWordIdx === reviewLine.words.length - 1;
 
     return (
-      <div className="p-4 space-y-4">
-        <div className="flex items-center justify-between text-sm text-gray-500">
-          <span>Word {currentWordNum} of {totalWords}</span>
-          <span>Line {reviewLineIdx + 1} of {result.lines.length}</span>
+      <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">
+        {/* Progress */}
+        <div className="flex items-center justify-between text-xs sm:text-sm text-gray-500">
+          <span>{currentWordNum}/{totalWords}</span>
+          <span>Line {reviewLineIdx + 1}/{result.lines.length}</span>
         </div>
         <div className="w-full bg-gray-200 rounded-full h-1.5">
           <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(currentWordNum / totalWords) * 100}%` }} />
         </div>
 
-        {/* Line image */}
-        <div className="border rounded-lg overflow-hidden">
-          <LineCropCanvas imgEl={imgEl} line={reviewLine} maxHeight={120} key={`rlc-${reviewLine.id}-${imageVersion}`} />
+        {/* Word handwriting crop — large and centered */}
+        <div className="flex justify-center border rounded-xl overflow-hidden bg-white p-2">
+          <WordCropCanvas imgEl={imgEl} word={reviewWord} line={reviewLine} maxHeight={100} key={`rwc-${reviewWord.id}-${imageVersion}`} />
         </div>
 
-        {/* Full line text with current word highlighted */}
-        <div className="flex flex-wrap gap-1 text-lg leading-relaxed justify-end p-3 bg-gray-50 rounded-lg border" dir="rtl">
-          {reviewLine.words.map((w, wi) => (
-            <span key={w.id} className={`px-2 py-1 rounded ${wi === reviewWordIdx
-              ? "bg-blue-500 text-white font-bold text-xl ring-2 ring-blue-300"
-              : w.correctedText ? "bg-green-100 text-green-800" : "text-gray-600"}`}>
-              {w.correctedText || w.rawText}
-            </span>
-          ))}
-        </div>
-
-        {/* Focused word */}
-        <div className="bg-white border-2 border-blue-200 rounded-xl p-6 text-center space-y-4">
-          <div className="text-3xl font-bold" dir="rtl">{reviewWord.correctedText || reviewWord.rawText}</div>
+        {/* Focused word text */}
+        <div className="bg-white border-2 border-blue-200 rounded-xl p-4 sm:p-6 text-center space-y-3">
+          <div className="text-2xl sm:text-3xl font-bold" dir="rtl">{reviewWord.correctedText || reviewWord.rawText}</div>
           {reviewWord.correctedText && reviewWord.correctedText !== reviewWord.rawText && (
-            <div className="text-sm text-gray-400">Original OCR: <span className="font-mono">{reviewWord.rawText}</span></div>
+            <div className="text-xs sm:text-sm text-gray-400">Original: <span className="font-mono">{reviewWord.rawText}</span></div>
           )}
 
           {reviewEditing ? (
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2">
               <input ref={editInputRef} type="text" dir="rtl" value={reviewEditValue}
                 onChange={(e) => setReviewEditValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") reviewSave(); if (e.key === "Escape") setReviewEditing(false); }}
-                className="border-2 border-blue-500 rounded px-3 py-2 text-xl text-right w-48 bg-white" />
-              <button onClick={reviewSave} className="bg-green-500 text-white px-4 py-2 rounded font-medium hover:bg-green-600">Save</button>
-              <button onClick={() => setReviewEditing(false)} className="text-gray-500 px-3 py-2 hover:text-gray-700">Cancel</button>
+                className="border-2 border-blue-500 rounded-lg px-4 py-3 text-xl text-right bg-white" />
+              <div className="flex gap-2">
+                <button onClick={reviewSave} className="flex-1 bg-green-500 text-white px-4 py-3 rounded-lg font-medium hover:bg-green-600 text-base">Save</button>
+                <button onClick={() => setReviewEditing(false)} className="flex-1 text-gray-500 px-4 py-3 rounded-lg hover:bg-gray-100 text-base">Cancel</button>
+              </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-3">
-              <button onClick={reviewConfirm} className="bg-green-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-600 text-sm">
-                &#10003; Correct (Space)
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={reviewConfirm} className="bg-green-500 text-white py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 text-base sm:text-sm active:bg-green-700">
+                &#10003; OK
               </button>
               <button onClick={() => { setReviewEditValue(reviewWord.correctedText || reviewWord.rawText); setReviewEditing(true); }}
-                className="bg-blue-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-600 text-sm">
-                &#9998; Edit (Enter)
+                className="bg-blue-500 text-white py-3 sm:py-2 rounded-lg font-medium hover:bg-blue-600 text-base sm:text-sm active:bg-blue-700">
+                &#9998; Edit
               </button>
-              <button onClick={reviewDelete} className="bg-red-100 text-red-600 px-4 py-2 rounded-lg font-medium hover:bg-red-200 text-sm">Delete</button>
+              <button onClick={reviewDelete} className="bg-red-100 text-red-600 py-3 sm:py-2 rounded-lg font-medium hover:bg-red-200 text-base sm:text-sm active:bg-red-300">
+                &#10005; Del
+              </button>
             </div>
           )}
         </div>
 
-        <div className="flex items-center justify-between">
-          <button onClick={reviewPrev} disabled={reviewLineIdx === 0 && reviewWordIdx === 0}
-            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">&rarr; Previous</button>
-          <div className="text-xs text-gray-400">Arrow keys to navigate, Space to confirm, Enter to edit</div>
-          <button onClick={reviewNext}
-            disabled={reviewLineIdx === result.lines.length - 1 && reviewWordIdx === reviewLine.words.length - 1}
-            className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-30 text-sm">Next &larr;</button>
+        {/* Line context — collapsed on mobile, shown on desktop */}
+        <details className="sm:open bg-gray-50 rounded-lg border">
+          <summary className="sm:hidden px-3 py-2 text-xs text-gray-400 cursor-pointer">Show line context</summary>
+          <div className="flex flex-wrap gap-1 text-base sm:text-lg leading-relaxed justify-end p-3" dir="rtl">
+            {reviewLine.words.map((w, wi) => (
+              <span key={w.id} className={`px-1.5 sm:px-2 py-0.5 sm:py-1 rounded ${wi === reviewWordIdx
+                ? "bg-blue-500 text-white font-bold ring-2 ring-blue-300"
+                : w.correctedText ? "bg-green-100 text-green-800" : "text-gray-600"}`}>
+                {w.correctedText || w.rawText}
+              </span>
+            ))}
+          </div>
+        </details>
+
+        {/* Navigation — large touch targets */}
+        <div className="flex items-center gap-2">
+          <button onClick={reviewPrev} disabled={isFirst}
+            className="flex-1 py-4 sm:py-2 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 disabled:opacity-30 text-base sm:text-sm font-medium">&rarr; Prev</button>
+          <button onClick={reviewNext} disabled={isLast}
+            className="flex-1 py-4 sm:py-2 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 disabled:opacity-30 text-base sm:text-sm font-medium">Next &larr;</button>
         </div>
+
+        <div className="hidden sm:block text-center text-xs text-gray-400">Arrow keys to navigate, Space to confirm, Enter to edit</div>
       </div>
     );
   }
@@ -666,21 +677,21 @@ export default function EditorPage() {
   if (status === "loading" || loading) return <div className="p-8">Loading...</div>;
 
   return (
-    <div className={`max-w-5xl mx-auto p-6 ${editingWord ? "pb-28" : ""}`}>
+    <div className={`max-w-5xl mx-auto px-3 py-4 sm:px-6 sm:py-6 ${editingWord ? "pb-44 sm:pb-28" : ""}`}>
       {/* Header */}
-      <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center gap-4">
-          <button onClick={() => router.push("/dashboard")} className="text-blue-600 hover:underline text-sm">&larr; Dashboard</button>
-          <h1 className="text-xl font-bold">{filename}</h1>
-          <span className={`px-2 py-0.5 rounded text-xs ${fileStatus === "completed" ? "bg-green-100 text-green-700" : fileStatus === "processing" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{fileStatus}</span>
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-4">
+        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+          <button onClick={() => router.push("/dashboard")} className="text-blue-600 hover:underline text-sm shrink-0">&larr;</button>
+          <h1 className="text-base sm:text-xl font-bold truncate">{filename}</h1>
+          <span className={`px-2 py-0.5 rounded text-xs shrink-0 ${fileStatus === "completed" ? "bg-green-100 text-green-700" : fileStatus === "processing" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{fileStatus}</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {result && (
             <>
-              {!reviewMode && <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1 rounded text-sm hover:bg-purple-600">Review Words</button>}
-              {reviewMode && <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Exit Review</button>}
-              <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600">Confirm All</button>
-              <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">Export TXT</button>
+              {!reviewMode && <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1.5 rounded text-sm hover:bg-purple-600">Review Words</button>}
+              {reviewMode && <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-600">Exit Review</button>}
+              <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1.5 rounded text-sm hover:bg-green-600">Confirm All</button>
+              <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700">Export</button>
             </>
           )}
         </div>
@@ -768,14 +779,14 @@ export default function EditorPage() {
               </div>
             </div>
           )}
-          <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={straightenImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">Straighten</button>
-            <button onClick={() => manualRotate(-1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">&#8634; -1&deg;</button>
-            <button onClick={() => manualRotate(1)} className="px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">&#8635; +1&deg;</button>
-            <button onClick={preprocessImage} className="px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300">Enhance Image</button>
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+            <button onClick={straightenImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">Straighten</button>
+            <button onClick={() => manualRotate(-1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">&#8634; -1&deg;</button>
+            <button onClick={() => manualRotate(1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">&#8635; +1&deg;</button>
+            <button onClick={preprocessImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">Enhance</button>
             {!trainingMode && (
               <button onClick={runOCR} disabled={ocrRunning}
-                className={`px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}>
+                className={`px-4 sm:px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
                 {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
               </button>
             )}
@@ -841,25 +852,26 @@ export default function EditorPage() {
         if (!selectedWord || !selectedLine) return null;
         const isCorrected = selectedWord.correctedText && selectedWord.correctedText !== selectedWord.rawText;
         return (
-          <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-4 py-3">
-            <div className="max-w-5xl mx-auto flex items-center gap-3">
-              {/* Handwriting crop preview */}
-              <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[200px]">
-                <WordCropCanvas
-                  imgEl={imageRef.current}
-                  word={selectedWord}
-                  line={selectedLine}
-                  maxHeight={48}
-                  key={`ebc-${selectedWord.id}-${imageVersion}`}
-                />
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-3 py-2 sm:px-4 sm:py-3 safe-bottom">
+            <div className="max-w-5xl mx-auto space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-3">
+              {/* Top row on mobile: crop + OCR text */}
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[120px] sm:max-w-[200px]">
+                  <WordCropCanvas
+                    imgEl={imageRef.current}
+                    word={selectedWord}
+                    line={selectedLine}
+                    maxHeight={40}
+                    key={`ebc-${selectedWord.id}-${imageVersion}`}
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
+                  <span className="text-base font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>
+                  {isCorrected && <span className="text-[10px] text-green-600 truncate">Corrected: {selectedWord.correctedText}</span>}
+                </div>
               </div>
 
-              <div className="flex flex-col gap-1 shrink-0" dir="rtl">
-                <span className="text-[10px] text-gray-400">OCR detected:</span>
-                <span className="text-base font-mono bg-gray-100 px-2 py-0.5 rounded">{selectedWord.rawText}</span>
-                {isCorrected && <span className="text-[10px] text-green-600">Corrected: {selectedWord.correctedText}</span>}
-              </div>
-
+              {/* Input row */}
               <div className="flex-1 min-w-0" dir="rtl">
                 <input
                   ref={editInputRef}
@@ -871,22 +883,20 @@ export default function EditorPage() {
                     if (e.key === "Enter") saveWord(selectedWord!.id, editValue);
                     if (e.key === "Escape") setEditingWord(null);
                   }}
-                  className="w-full border-2 border-orange-400 rounded px-3 py-2 text-lg text-right bg-white focus:outline-none focus:ring-2 focus:ring-orange-300"
+                  className="w-full border-2 border-orange-400 rounded-lg px-3 py-3 sm:py-2 text-lg text-right bg-white focus:outline-none focus:ring-2 focus:ring-orange-300"
                   autoFocus
                 />
               </div>
 
+              {/* Action buttons */}
               <div className="flex gap-2 shrink-0">
                 <button onClick={() => saveWord(selectedWord!.id, editValue)}
-                  className="bg-green-500 text-white px-4 py-2 rounded font-medium hover:bg-green-600 text-sm">Save</button>
+                  className="flex-1 sm:flex-none bg-green-500 text-white px-4 py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 active:bg-green-700 text-base sm:text-sm">Save</button>
                 <button onClick={() => setEditingWord(null)}
-                  className="bg-gray-200 text-gray-700 px-3 py-2 rounded text-sm hover:bg-gray-300">Cancel</button>
+                  className="flex-1 sm:flex-none bg-gray-200 text-gray-700 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-gray-300">Cancel</button>
                 <button onClick={() => deleteWord(selectedWord!.id)}
-                  className="bg-red-100 text-red-600 px-3 py-2 rounded text-sm hover:bg-red-200">Delete</button>
+                  className="bg-red-100 text-red-600 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-red-200">Del</button>
               </div>
-            </div>
-            <div className="max-w-5xl mx-auto mt-1 text-[10px] text-gray-400">
-              Enter = save &middot; Escape = cancel
             </div>
           </div>
         );
