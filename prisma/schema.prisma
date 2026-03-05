@@ -104,10 +104,11 @@ model Correction {
 }
 
 model TrainingExample {
-  id          String   @id @default(cuid())
-  profileId   String
-  profile     HandwritingProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  storagePath String
-  text        String
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  profileId    String
+  profile      HandwritingProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  storagePath  String
+  text         String
+  sourceLineId String?  @unique
+  createdAt    DateTime @default(now())
 }

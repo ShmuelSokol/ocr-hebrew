@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { supabase, BUCKET } from "@/lib/supabase";
 
 export async function PATCH(
   req: NextRequest,
@@ -9,12 +10,13 @@ export async function PATCH(
 ) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = (session.user as { id: string }).id;
 
   const { correctedText } = await req.json();
 
   const word = await prisma.oCRWord.findUnique({
     where: { id: params.wordId },
-    include: { line: true },
+    include: { line: { include: { result: { include: { file: true } } } } },
   });
 
   if (!word) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -38,7 +40,73 @@ export async function PATCH(
     data: { correctedText: lineCorrected },
   });
 
+  // Auto-save line crop as training example (background, non-blocking)
+  // This links the correction to the actual handwriting image
+  const file = word.line.result.file;
+  if (file.profileId) {
+    saveLineTraining(userId, file, word.line, lineCorrected).catch(() => {});
+  }
+
   return NextResponse.json({ success: true });
+}
+
+// Save/update a training example for this line (line crop image + corrected text)
+async function saveLineTraining(
+  userId: string,
+  file: { id: string; storagePath: string; profileId: string | null },
+  line: { id: string; lineIndex: number; yTop: number; yBottom: number },
+  text: string,
+) {
+  if (!file.profileId || !text.trim()) return;
+
+  // Check if we already have a training example for this line
+  const existing = await prisma.trainingExample.findUnique({
+    where: { sourceLineId: line.id },
+  });
+
+  if (existing) {
+    // Update text only — image crop is the same
+    await prisma.trainingExample.update({
+      where: { id: existing.id },
+      data: { text },
+    });
+    return;
+  }
+
+  // First time: crop the line image and upload
+  const sharp = (await import("sharp")).default;
+  const { data: blob, error } = await supabase.storage.from(BUCKET).download(file.storagePath);
+  if (error || !blob) return;
+
+  const imageBuffer = Buffer.from(await blob.arrayBuffer());
+  const metadata = await sharp(imageBuffer).metadata();
+  const imgHeight = metadata.height || 1;
+  const imgWidth = metadata.width || 1;
+
+  const padY = Math.floor((line.yBottom - line.yTop) * 0.15);
+  const yTop = Math.max(0, line.yTop - padY);
+  const yBottom = Math.min(imgHeight, line.yBottom + padY);
+  if (yBottom - yTop < 5) return;
+
+  const cropBuffer = await sharp(imageBuffer)
+    .extract({ left: 0, top: yTop, width: imgWidth, height: yBottom - yTop })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
+  const storagePath = `training/${userId}/${file.profileId}/${Date.now()}_line${line.lineIndex}.jpg`;
+  const { error: upError } = await supabase.storage
+    .from(BUCKET)
+    .upload(storagePath, cropBuffer, { contentType: "image/jpeg", upsert: false });
+  if (upError) return;
+
+  await prisma.trainingExample.create({
+    data: {
+      profileId: file.profileId,
+      storagePath,
+      text,
+      sourceLineId: line.id,
+    },
+  });
 }
 
 export async function DELETE(
