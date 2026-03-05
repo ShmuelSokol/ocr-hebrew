@@ -42,8 +42,11 @@ export default function EditorPage() {
   const [fileStatus, setFileStatus] = useState("");
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
   const [imageDisplayWidth, setImageDisplayWidth] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [showOverlay, setShowOverlay] = useState(true);
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadResult = useCallback(async () => {
     setLoading(true);
@@ -66,6 +69,24 @@ export default function EditorPage() {
     if (status === "unauthenticated") router.push("/login");
     if (status === "authenticated") loadResult();
   }, [status, router, loadResult]);
+
+  // Timer for OCR processing
+  useEffect(() => {
+    if (ocrRunning) {
+      setElapsedSeconds(0);
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds((s) => s + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [ocrRunning]);
 
   function onImageLoad() {
     if (imageRef.current) {
@@ -135,87 +156,38 @@ export default function EditorPage() {
     setEditValue(word.correctedText || word.rawText);
   }
 
-  // Calculate scale from natural image to displayed size
-  const scale = imageRef.current
-    ? imageRef.current.clientHeight / imageNaturalHeight
-    : 1;
-
-  // Build interleaved strips: for each detected line, show the image strip then the OCR text
+  // Render OCR text overlayed directly on the image
   function renderOverlay() {
     if (!result?.lines.length || !imageNaturalHeight) return null;
 
-    const strips: { type: "image" | "text"; line: Line; yTop: number; yBottom: number }[] = [];
-    let prevBottom = 0;
-
-    for (const line of result.lines) {
-      // If there's a gap before this line, add it as blank image space
-      if (line.yTop > 0 && line.yTop > prevBottom) {
-        strips.push({
-          type: "image",
-          line,
-          yTop: prevBottom,
-          yBottom: line.yTop,
-        });
-      }
-      // The image strip for this line
-      strips.push({
-        type: "image",
-        line,
-        yTop: line.yTop || prevBottom,
-        yBottom: line.yBottom || prevBottom + 50,
-      });
-      // The OCR text strip
-      strips.push({
-        type: "text",
-        line,
-        yTop: line.yTop,
-        yBottom: line.yBottom,
-      });
-      prevBottom = line.yBottom || prevBottom + 50;
-    }
-
-    // Remaining image after last line
-    if (prevBottom < imageNaturalHeight) {
-      strips.push({
-        type: "image",
-        line: result.lines[result.lines.length - 1],
-        yTop: prevBottom,
-        yBottom: imageNaturalHeight,
-      });
-    }
-
     return (
       <div className="relative" style={{ width: imageDisplayWidth || "100%" }}>
-        {strips.map((strip, i) => {
-          if (strip.type === "image") {
-            const height = strip.yBottom - strip.yTop;
-            return (
-              <div
-                key={`img-${i}`}
-                style={{
-                  width: "100%",
-                  height: height * scale,
-                  backgroundImage: `url(/api/files/${fileId}/image)`,
-                  backgroundPosition: `0 ${-strip.yTop * scale}px`,
-                  backgroundSize: `${imageDisplayWidth}px auto`,
-                  backgroundRepeat: "no-repeat",
-                }}
-              />
-            );
-          }
-
-          // Text overlay strip
-          const line = strip.line;
+        {/* Full image as background */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`/api/files/${fileId}/image`}
+          alt="Original"
+          className="w-full block"
+          style={{ display: "block" }}
+        />
+        {/* Overlay text lines on top of the image */}
+        {showOverlay && result.lines.map((line) => {
           const allConfirmed = line.words.every((w) => w.correctedText);
           return (
             <div
               key={`text-${line.id}`}
-              className={`border-t border-b px-3 py-2 flex items-start gap-2 ${
-                allConfirmed ? "bg-green-50 border-green-200" : "bg-yellow-50 border-yellow-200"
+              className={`absolute left-0 right-0 px-2 py-1 flex items-center gap-1 ${
+                allConfirmed
+                  ? "bg-green-50/80 border-y border-green-300"
+                  : "bg-yellow-50/80 border-y border-yellow-300"
               }`}
               dir="rtl"
+              style={{
+                top: `${(line.yTop / imageNaturalHeight) * 100}%`,
+                minHeight: `${((line.yBottom - line.yTop) / imageNaturalHeight) * 100}%`,
+              }}
             >
-              <div className="flex flex-wrap gap-1 text-base leading-relaxed flex-1">
+              <div className="flex flex-wrap gap-1 text-sm leading-snug flex-1">
                 {line.words.map((word) => {
                   const isCorrected =
                     word.correctedText && word.correctedText !== word.rawText;
@@ -234,7 +206,7 @@ export default function EditorPage() {
                             if (e.key === "Enter") saveWord(word.id, editValue);
                             if (e.key === "Escape") setEditingWord(null);
                           }}
-                          className="border-2 border-blue-500 rounded px-1 py-0.5 text-base w-28 text-right bg-white"
+                          className="border-2 border-blue-500 rounded px-1 py-0.5 text-sm w-24 text-right bg-white"
                           autoFocus
                         />
                         <button
@@ -257,11 +229,11 @@ export default function EditorPage() {
                     <span
                       key={word.id}
                       onClick={() => startEdit(word)}
-                      className={`cursor-pointer px-1 rounded transition-all hover:bg-blue-100 hover:shadow ${
+                      className={`cursor-pointer px-1 rounded transition-all hover:bg-blue-200 hover:shadow text-gray-900 ${
                         isCorrected
-                          ? "bg-green-100 border border-green-300 font-medium"
+                          ? "bg-green-200/90 border border-green-400 font-medium"
                           : ""
-                      } ${word.rawText === "[?]" ? "bg-red-100 text-red-500 border border-red-300" : ""}`}
+                      } ${word.rawText === "[?]" ? "bg-red-200/90 text-red-600 border border-red-400" : ""}`}
                       title={
                         isCorrected
                           ? `Original: ${word.rawText}`
@@ -276,14 +248,14 @@ export default function EditorPage() {
               {!allConfirmed && (
                 <button
                   onClick={() => confirmLine(line.id)}
-                  className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5"
-                  title="Confirm this line is correct and save all words to the handwriting profile"
+                  className="text-xs bg-green-500 text-white px-2 py-0.5 rounded hover:bg-green-600 whitespace-nowrap"
+                  title="Confirm this line is correct"
                 >
-                  Confirm
+                  &#10003;
                 </button>
               )}
               {allConfirmed && (
-                <span className="text-xs text-green-600 whitespace-nowrap mt-1">&#10003;</span>
+                <span className="text-xs text-green-600 whitespace-nowrap">&#10003;</span>
               )}
             </div>
           );
@@ -373,46 +345,76 @@ export default function EditorPage() {
           </button>
         </div>
         {ocrRunning && (
-          <div className="mt-3 flex items-center gap-2 text-sm text-gray-500">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-            Processing with Claude Opus... (30-60 seconds)
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center justify-between text-sm text-gray-500">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                <span>Processing image...</span>
+              </div>
+              <span className="tabular-nums font-mono">
+                {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")}
+              </span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out"
+                style={{
+                  width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%`,
+                }}
+              />
+            </div>
+            <p className="text-xs text-gray-400">
+              {elapsedSeconds < 15
+                ? "Detecting lines..."
+                : elapsedSeconds < 45
+                ? "Reading handwriting..."
+                : "Almost done..."}
+            </p>
           </div>
         )}
       </div>
 
-      {/* Main content: overlaid image + text */}
+      {/* Main content: image with OCR overlay */}
       <div className="bg-white rounded-lg shadow overflow-hidden" ref={containerRef}>
-        {!result ? (
-          // Just show the image if no OCR yet
-          <div className="p-4">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              ref={imageRef}
-              src={`/api/files/${fileId}/image`}
-              alt="Original"
-              className="w-full"
-              onLoad={onImageLoad}
-            />
-          </div>
-        ) : (
-          // Show interleaved image strips + OCR text
-          <div className="overflow-auto">
-            {/* Hidden image to get dimensions */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              ref={imageRef}
-              src={`/api/files/${fileId}/image`}
-              alt=""
-              className="w-full invisible h-0"
-              onLoad={onImageLoad}
-            />
-            {imageNaturalHeight > 0 ? (
-              renderOverlay()
-            ) : (
-              <p className="p-8 text-center text-gray-400">Loading image...</p>
-            )}
+        {result && (
+          <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b">
+            <button
+              onClick={() => setShowOverlay(!showOverlay)}
+              className={`text-xs px-3 py-1 rounded font-medium ${
+                showOverlay
+                  ? "bg-blue-100 text-blue-700 border border-blue-300"
+                  : "bg-gray-200 text-gray-600"
+              }`}
+            >
+              {showOverlay ? "Hide Overlay" : "Show Overlay"}
+            </button>
           </div>
         )}
+        <div className="overflow-auto">
+          {/* Hidden image for measuring natural dimensions */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            ref={imageRef}
+            src={`/api/files/${fileId}/image`}
+            alt=""
+            className="w-full invisible h-0"
+            onLoad={onImageLoad}
+          />
+          {!result ? (
+            <div className="p-4">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/api/files/${fileId}/image`}
+                alt="Original"
+                className="w-full"
+              />
+            </div>
+          ) : imageNaturalHeight > 0 ? (
+            renderOverlay()
+          ) : (
+            <p className="p-8 text-center text-gray-400">Loading image...</p>
+          )}
+        </div>
       </div>
 
       {/* Legend */}
