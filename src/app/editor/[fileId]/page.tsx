@@ -158,21 +158,27 @@ export default function EditorPage() {
 
   async function confirmLine(lineId: string) {
     await fetch(`/api/lines/${lineId}/confirm`, { method: "POST" });
-    // Auto-save as training example if profile exists
+    // Fire-and-forget: save training example in background
     if (profileId) {
-      await fetch(`/api/lines/${lineId}/save-training`, { method: "POST" }).catch(() => {});
+      fetch(`/api/lines/${lineId}/save-training`, { method: "POST" }).catch(() => {});
     }
+    await loadResult();
+  }
+
+  async function unconfirmLine(lineId: string) {
+    await fetch(`/api/lines/${lineId}/confirm`, { method: "DELETE" });
     await loadResult();
   }
 
   async function confirmAllLines() {
     if (!result) return;
-    for (const line of result.lines) {
-      if (line.words.some((w) => !w.correctedText)) {
-        await fetch(`/api/lines/${line.id}/confirm`, { method: "POST" });
-        if (profileId) {
-          await fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
-        }
+    const toConfirm = result.lines.filter((line) => line.words.some((w) => !w.correctedText));
+    // Confirm all in parallel
+    await Promise.all(toConfirm.map((line) => fetch(`/api/lines/${line.id}/confirm`, { method: "POST" })));
+    // Fire-and-forget: save training examples in background
+    if (profileId) {
+      for (const line of toConfirm) {
+        fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
       }
     }
     await loadResult();
@@ -573,7 +579,8 @@ export default function EditorPage() {
                       <button onClick={() => confirmLine(line.id)}
                         className="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 whitespace-nowrap mt-0.5 shrink-0" title="Confirm this line">&#10003;</button>
                     ) : (
-                      <span className="text-xs text-green-600 whitespace-nowrap mt-1 shrink-0">&#10003;</span>
+                      <button onClick={() => unconfirmLine(line.id)}
+                        className="text-xs text-green-600 hover:text-red-500 whitespace-nowrap mt-1 shrink-0 transition-colors" title="Click to unconfirm">&#10003;</button>
                     )}
                   </div>
                 </div>

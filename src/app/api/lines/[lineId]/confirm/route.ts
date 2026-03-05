@@ -12,54 +12,60 @@ export async function POST(
 
   const line = await prisma.oCRLine.findUnique({
     where: { id: params.lineId },
-    include: {
-      words: { orderBy: { wordIndex: "asc" } },
-      result: { include: { file: true } },
-    },
+    include: { words: { orderBy: { wordIndex: "asc" } } },
   });
 
   if (!line) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const profileId = line.result.file.profileId;
-  if (!profileId) return NextResponse.json({ error: "No profile" }, { status: 400 });
-
-  // For each word that hasn't been confirmed yet, save it as a confirmed reading
-  for (const word of line.words) {
-    if (word.correctedText) continue; // already handled
-
-    const finalText = word.rawText;
-
-    // Mark word as confirmed (correctedText = rawText means confirmed correct)
-    await prisma.oCRWord.update({
-      where: { id: word.id },
-      data: { correctedText: finalText },
-    });
-
-    // Save to profile — skip only exact duplicates
-    const exactDuplicate = await prisma.correction.findFirst({
-      where: { profileId, originalText: finalText, correctedText: finalText },
-    });
-    if (!exactDuplicate) {
-      await prisma.correction.create({
-        data: {
-          profileId,
-          originalText: finalText,
-          correctedText: finalText,
-        },
-      });
-    }
+  // Batch confirm: set correctedText = rawText for all unconfirmed words
+  const unconfirmed = line.words.filter((w) => !w.correctedText);
+  if (unconfirmed.length > 0) {
+    await prisma.$transaction(
+      unconfirmed.map((w) =>
+        prisma.oCRWord.update({
+          where: { id: w.id },
+          data: { correctedText: w.rawText },
+        })
+      )
+    );
   }
 
   // Update line corrected text
-  const updatedWords = await prisma.oCRWord.findMany({
-    where: { lineId: line.id },
-    orderBy: { wordIndex: "asc" },
-  });
-  const lineCorrected = updatedWords.map((w) => w.correctedText || w.rawText).join(" ");
+  const lineCorrected = line.words.map((w) => w.correctedText || w.rawText).join(" ");
   await prisma.oCRLine.update({
     where: { id: line.id },
     data: { correctedText: lineCorrected },
   });
 
-  return NextResponse.json({ success: true, confirmedCount: line.words.length });
+  return NextResponse.json({ success: true });
+}
+
+// Unconfirm a line — clears correctedText on all words
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { lineId: string } }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const line = await prisma.oCRLine.findUnique({
+    where: { id: params.lineId },
+    include: { words: true },
+  });
+
+  if (!line) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Clear correctedText on all words
+  await prisma.oCRWord.updateMany({
+    where: { lineId: line.id },
+    data: { correctedText: null },
+  });
+
+  // Clear line corrected text
+  await prisma.oCRLine.update({
+    where: { id: line.id },
+    data: { correctedText: null },
+  });
+
+  return NextResponse.json({ success: true });
 }
