@@ -101,16 +101,36 @@ export async function detectLines(imageBuffer: Buffer): Promise<{ yTop: number; 
   lineHeights.sort((a, b) => a - b);
   const medianHeight = lineHeights[Math.floor(lineHeights.length / 2)];
 
-  const result: { yTop: number; yBottom: number }[] = [];
+  const splitResult: { yTop: number; yBottom: number }[] = [];
   for (const line of lines) {
     const h = line.yBottom - line.yTop;
     if (h > medianHeight * 2 && medianHeight > 0) {
-      // Try to split at density valleys within this region
       const subLines = splitAtValleys(smoothed, line.yTop, line.yBottom, medianHeight, threshold, minLineHeight);
-      result.push(...subLines);
+      splitResult.push(...subLines);
     } else {
-      result.push(line);
+      splitResult.push(line);
     }
+  }
+
+  // Filter out noise: scanner artifacts (very high ink density) and abnormal lines
+  const result: { yTop: number; yBottom: number }[] = [];
+  for (const line of splitResult) {
+    const h = line.yBottom - line.yTop;
+
+    // Calculate average ink density for this line region
+    let totalDensity = 0;
+    for (let y = line.yTop; y < line.yBottom; y++) {
+      totalDensity += rowDensity[y] || 0;
+    }
+    const avgDensity = totalDensity / h;
+
+    // Reject scanner artifacts: lines where >40% of pixels are dark (text is typically 5-25%)
+    if (avgDensity > 0.4) continue;
+
+    // Reject abnormally tall lines (>3x median) that weren't split — likely noise
+    if (medianHeight > 0 && h > medianHeight * 3) continue;
+
+    result.push(line);
   }
 
   return result;
