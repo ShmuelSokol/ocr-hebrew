@@ -28,6 +28,7 @@ export async function GET() {
       text: e.text,
       profileId: e.profileId,
       profileName: e.profile.name,
+      source: e.source,
       createdAt: e.createdAt,
     })),
   });

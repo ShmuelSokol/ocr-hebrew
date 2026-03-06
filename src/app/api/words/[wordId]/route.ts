@@ -111,7 +111,8 @@ async function saveWordTraining(
       profileId: file.profileId,
       storagePath,
       text,
-      sourceLineId: word.id, // using sourceLineId to track word-level too
+      source: "corrected",
+      sourceLineId: word.id,
     },
   });
 }

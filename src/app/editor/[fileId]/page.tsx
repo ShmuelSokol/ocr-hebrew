@@ -131,6 +131,7 @@ export default function EditorPage() {
   const [imageCacheBust, setImageCacheBust] = useState(() => Date.now());
   // This counter triggers canvas re-draws when the image changes
   const [imageVersion, setImageVersion] = useState(0);
+  const [confirmedWords, setConfirmedWords] = useState<Set<string>>(new Set());
 
   const imageRef = useRef<HTMLImageElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -329,6 +330,23 @@ export default function EditorPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ correctedText: corrected }),
     });
+  }
+
+  async function confirmWordCorrect(wordId: string) {
+    setConfirmedWords(prev => new Set(prev).add(wordId));
+    fetch(`/api/words/${wordId}/confirm`, { method: "POST" }).catch(() => {
+      setConfirmedWords(prev => { const next = new Set(prev); next.delete(wordId); return next; });
+    });
+  }
+
+  async function confirmAllWordsCorrect() {
+    if (!result) return;
+    const uncorrectedWords = result.lines
+      .flatMap(l => l.words)
+      .filter(w => !w.correctedText && w.xLeft != null && !confirmedWords.has(w.id));
+    for (const w of uncorrectedWords) {
+      confirmWordCorrect(w.id);
+    }
   }
 
   // Save current word and move to next
@@ -539,35 +557,57 @@ export default function EditorPage() {
 
                 {line.words.map((word) => {
                   const isCorrected = word.correctedText && word.correctedText !== word.rawText;
+                  const isConfirmed = confirmedWords.has(word.id);
                   const isSelected = editingWord === word.id;
                   const displayText = word.correctedText || word.rawText;
 
                   return (
                     <div key={word.id} className="inline-flex flex-col items-center">
-                      <button
-                        onClick={() => startEdit(word)}
-                        className={`rounded-lg border-2 transition-all flex flex-col items-center overflow-hidden ${
-                          isSelected ? "border-orange-500 ring-2 ring-orange-300 shadow-lg scale-105" :
-                          isCorrected ? "border-green-400 bg-green-50 hover:border-green-500 hover:shadow" :
-                          word.rawText === "[?]" ? "border-red-300 bg-red-50 hover:border-red-400" :
-                          "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
-                        }`}
-                      >
-                        {/* Word handwriting crop */}
-                        {word.xLeft != null && word.xRight != null && (
-                          <div className="bg-white">
-                            <WordCropCanvas imgEl={imgEl} word={word} line={line} maxHeight={50} key={`wc-${word.id}-${imageVersion}`} />
-                          </div>
-                        )}
+                      <div className="relative">
+                        <button
+                          onClick={() => startEdit(word)}
+                          className={`rounded-lg border-2 transition-all flex flex-col items-center overflow-hidden ${
+                            isSelected ? "border-orange-500 ring-2 ring-orange-300 shadow-lg scale-105" :
+                            isCorrected ? "border-green-400 bg-green-50 hover:border-green-500 hover:shadow" :
+                            isConfirmed ? "border-blue-400 bg-blue-50 hover:border-blue-500 hover:shadow" :
+                            word.rawText === "[?]" ? "border-red-300 bg-red-50 hover:border-red-400" :
+                            "border-gray-300 bg-white hover:border-blue-400 hover:shadow-md"
+                          }`}
+                        >
+                          {/* Word handwriting crop */}
+                          {word.xLeft != null && word.xRight != null && (
+                            <div className="bg-white">
+                              <WordCropCanvas imgEl={imgEl} word={word} line={line} maxHeight={50} key={`wc-${word.id}-${imageVersion}`} />
+                            </div>
+                          )}
 
-                        {/* OCR text */}
-                        <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${word.xLeft != null ? "border-t" : ""} ${
-                          isSelected ? "bg-orange-100" :
-                          isCorrected ? "bg-green-50" : ""
-                        }`} dir="rtl">
-                          {displayText}
-                        </div>
-                      </button>
+                          {/* OCR text */}
+                          <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${word.xLeft != null ? "border-t" : ""} ${
+                            isSelected ? "bg-orange-100" :
+                            isCorrected ? "bg-green-50" :
+                            isConfirmed ? "bg-blue-50" : ""
+                          }`} dir="rtl">
+                            {displayText}
+                          </div>
+                        </button>
+
+                        {/* Confirm correct button */}
+                        {!isCorrected && !isConfirmed && word.xLeft != null && profileId && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); confirmWordCorrect(word.id); }}
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 hover:!opacity-100 hover:bg-blue-600 shadow transition-opacity"
+                            style={{ opacity: undefined }}
+                            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                            onMouseLeave={(e) => (e.currentTarget.style.opacity = "")}
+                            title="Save as correct to training data"
+                          >
+                            &#10003;
+                          </button>
+                        )}
+                        {isConfirmed && (
+                          <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center shadow">&#10003;</span>
+                        )}
+                      </div>
 
                       {renderAddBtn(line.id, word.wordIndex)}
                     </div>
@@ -628,12 +668,17 @@ export default function EditorPage() {
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
+              <button onClick={() => { confirmWordCorrect(reviewWord.id); reviewNext(); }}
+                className={`py-3 sm:py-2 rounded-lg font-medium text-base sm:text-sm ${confirmedWords.has(reviewWord.id) ? "bg-blue-200 text-blue-800" : "bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700"}`}
+                disabled={confirmedWords.has(reviewWord.id)}>
+                {confirmedWords.has(reviewWord.id) ? "Saved" : "&#10003; Correct"}
+              </button>
               <button onClick={reviewConfirm} className="bg-green-500 text-white py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 text-base sm:text-sm active:bg-green-700">
-                &#10003; OK
+                &#10140; Skip
               </button>
               <button onClick={() => { setReviewEditValue(reviewWord.correctedText || reviewWord.rawText); setReviewEditing(true); }}
-                className="bg-blue-500 text-white py-3 sm:py-2 rounded-lg font-medium hover:bg-blue-600 text-base sm:text-sm active:bg-blue-700">
+                className="bg-orange-500 text-white py-3 sm:py-2 rounded-lg font-medium hover:bg-orange-600 text-base sm:text-sm active:bg-orange-700">
                 &#9998; Edit
               </button>
               <button onClick={reviewDelete} className="bg-red-100 text-red-600 py-3 sm:py-2 rounded-lg font-medium hover:bg-red-200 text-base sm:text-sm active:bg-red-300">
@@ -712,6 +757,7 @@ export default function EditorPage() {
               {!reviewMode && <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1.5 rounded text-sm hover:bg-purple-600">Review Words</button>}
               {reviewMode && <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-600">Exit Review</button>}
               <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1.5 rounded text-sm hover:bg-green-600">Confirm All</button>
+              {profileId && <button onClick={confirmAllWordsCorrect} className="bg-blue-500 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-600">Save All Correct</button>}
               <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700">Export</button>
             </>
           )}

@@ -13,6 +13,7 @@ interface TrainingItem {
   text: string;
   profileId: string;
   profileName: string;
+  source: string;
   createdAt: string;
 }
 
@@ -111,8 +112,18 @@ export default function TrainingPage() {
         <div>
           <h1 className="text-2xl font-bold">Training Data</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {filtered.length} word examples
+            {filtered.length} examples
             {filterProfile && " (filtered)"}
+            {filtered.length > 0 && (
+              <span className="ml-2 text-xs">
+                <span className="text-blue-600">{filtered.filter(e => e.source === "confirmed").length} correct</span>
+                {" / "}
+                <span className="text-green-600">{filtered.filter(e => e.source === "corrected").length} corrected</span>
+                {filtered.filter(e => e.source !== "confirmed" && e.source !== "corrected").length > 0 && (
+                  <> / <span className="text-gray-500">{filtered.filter(e => e.source !== "confirmed" && e.source !== "corrected").length} manual</span></>
+                )}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -296,7 +307,16 @@ export default function TrainingPage() {
                     </button>
                   </div>
                 )}
-                <p className="text-xs text-gray-400 mt-1">{item.profileName}</p>
+                <div className="flex items-center gap-1 mt-1">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                    item.source === "confirmed" ? "bg-blue-100 text-blue-600" :
+                    item.source === "corrected" ? "bg-green-100 text-green-600" :
+                    "bg-gray-100 text-gray-500"
+                  }`}>
+                    {item.source === "confirmed" ? "correct" : item.source === "corrected" ? "corrected" : item.source || "manual"}
+                  </span>
+                  <span className="text-[10px] text-gray-400">{item.profileName}</span>
+                </div>
               </div>
             </div>
           ))}

@@ -109,6 +109,7 @@ model TrainingExample {
   profile      HandwritingProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
   storagePath  String
   text         String
+  source       String   @default("corrected")
   sourceLineId String?  @unique
   createdAt    DateTime @default(now())
 }
