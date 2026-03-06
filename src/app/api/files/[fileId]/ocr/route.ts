@@ -69,6 +69,7 @@ export async function POST(
                 rawText: word.text,
                 xLeft: word.xLeft,
                 xRight: word.xRight,
+                confidence: word.confidence ?? null,
               })),
             },
           })),

@@ -1,13 +1,14 @@
 # OCR Hebrew (ksavyad.com)
 
-Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital text using Claude Opus Vision API.
+Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital text using Azure Document Intelligence OCR.
 
 ## Architecture
 
 - **Framework**: Next.js 14 App Router + TypeScript
 - **Database**: Supabase PostgreSQL (via Prisma ORM v5)
 - **File Storage**: Supabase Storage (bucket: `uploads`)
-- **OCR Engine**: Claude Opus 4 Vision API (claude-opus-4-20250514) — full-page single-call
+- **OCR Engine**: Azure Document Intelligence (`prebuilt-read` with `locale=he`) — word-level bounding boxes + Hebrew text
+- **Fine-Tuning**: TrOCR-small (local, Python + PyTorch MPS on Mac Mini M4)
 - **Auth**: NextAuth.js with credentials provider (email/password)
 - **Hosting**: Railway (Docker, standalone Next.js)
 - **Domain**: ksavyad.com (Cloudflare DNS)
@@ -17,22 +18,28 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 
 | File | Purpose |
 |------|---------|
-| `src/lib/ocr.ts` | Core OCR engine — line detection, Claude API calls, correction context |
-| `src/lib/supabase.ts` | Supabase client for storage |
+| `src/lib/ocr.ts` | Core OCR engine — Azure Document Intelligence, line detection, skew detection |
+| `src/lib/supabase.ts` | Supabase client for storage (lazy Proxy pattern) |
 | `src/lib/prisma.ts` | Prisma client singleton |
 | `src/lib/auth.ts` | NextAuth config |
 | `src/app/editor/[fileId]/page.tsx` | Editor — image overlay with OCR text, word-level corrections |
 | `src/app/dashboard/page.tsx` | Dashboard — upload, profiles, files, usage stats, corrections viewer |
+| `src/app/training/page.tsx` | Training data management — view, edit, delete, add word examples |
+| `src/app/training/monitor/page.tsx` | Live training dashboard — charts, stats, sample predictions |
+| `src/app/api/training/route.ts` | Training examples CRUD (GET/POST/PATCH/DELETE) |
+| `src/app/api/training/export/route.ts` | Export all training data as JSON+base64 images |
+| `src/app/api/training/status/route.ts` | Serve live training status from `status.json` |
+| `src/app/api/training/[id]/image/route.ts` | Serve training example word crop images |
 | `src/app/api/files/route.ts` | File upload (to Supabase Storage) and listing |
 | `src/app/api/files/[fileId]/ocr/route.ts` | Run OCR on a file |
 | `src/app/api/files/[fileId]/image/route.ts` | Serve images from Supabase Storage |
-| `src/app/api/words/[wordId]/route.ts` | Word correction — saves to handwriting profile |
+| `src/app/api/words/[wordId]/route.ts` | Word correction — saves to handwriting profile + training example |
 | `prisma/schema.prisma` | Database schema |
 | `Dockerfile` | Multi-stage Docker build for Railway |
 
 ## Database Schema (Prisma)
 
-Models: User, HandwritingProfile, File, OCRResult, OCRLine, OCRWord, TokenUsage, Correction
+Models: User, HandwritingProfile, File, OCRResult, OCRLine, OCRWord, TokenUsage, Correction, TrainingExample
 
 - Uses pooled connection on port 6543 (`DATABASE_URL`) and session mode on port 5432 (`DIRECT_URL`)
 - Binary targets: `native` + `linux-musl-openssl-3.0.x` (for Alpine Docker)
@@ -40,15 +47,37 @@ Models: User, HandwritingProfile, File, OCRResult, OCRLine, OCRWord, TokenUsage,
 ## How OCR Works
 
 1. Image uploaded to Supabase Storage
-2. Line detection via pixel density analysis (sharp library)
-3. Correction context built from handwriting profile (grouped by frequency)
-4. Claude Opus Vision called with full image + line positions + corrections + optional first-line hint
-5. Results stored as OCRResult → OCRLine → OCRWord hierarchy
-6. User corrects words in editor → corrections saved to profile → improves future OCR
+2. Azure Document Intelligence `prebuilt-read` called with `locale=he`
+3. Azure returns word-level polygons (4-corner bounding boxes) + Hebrew text + confidence
+4. Words grouped into lines by matching y-coordinates to Azure's line polygons
+5. Words sorted right-to-left (Hebrew RTL) within each line
+6. Results stored as OCRResult → OCRLine → OCRWord hierarchy (with confidence scores)
+7. User reviews word crops and corrects text in editor
+8. Corrections auto-saved as TrainingExample (word crop image + corrected text) for fine-tuning
 
-### Known Issue: Hallucination
+## Fine-Tuning Pipeline
 
-Claude can generate plausible Talmudic text from memory instead of reading actual handwriting. The first-line hint and correction feedback loop help mitigate this.
+Located in `../training/` (sibling to `web/` directory).
+
+| File | Purpose |
+|------|---------|
+| `setup.sh` | Install Python 3.11, create venv, install PyTorch + deps |
+| `download_data.py` | Download training examples from web app API |
+| `validate_data.py` | Audit data quality (images, labels, duplicates) |
+| `train.py` | TrOCR-small fine-tuning (MPS, augmentation, early stopping, checkpoints) |
+| `inference.py` | Run inference on single images, directories, or benchmark |
+
+Training writes `output/status.json` which the web dashboard reads for live monitoring.
+
+### Training workflow:
+```bash
+cd ocr-hebrew/training
+source venv/bin/activate
+python download_data.py --cookie SESSION_COOKIE
+python validate_data.py
+python train.py
+python inference.py --model output/checkpoints/best --image word.jpg
+```
 
 ## Deployment
 
@@ -65,7 +94,10 @@ Or use the `/deploy` skill which commits, pushes to GitHub, and deploys.
 |----------|---------|
 | `DATABASE_URL` | Supabase pooler connection (port 6543) |
 | `DIRECT_URL` | Supabase session mode connection (port 5432) |
-| `ANTHROPIC_API_KEY` | Claude API for OCR |
+| `AZURE_DOC_INTELLIGENCE_ENDPOINT` | Azure Document Intelligence endpoint |
+| `AZURE_DOC_INTELLIGENCE_KEY` | Azure Document Intelligence API key |
+| `ANTHROPIC_API_KEY` | Claude API (future refinement) |
+| `GOOGLE_CLOUD_VISION_API_KEY` | Google Cloud Vision API (legacy, kept as fallback) |
 | `NEXTAUTH_SECRET` | Auth session signing |
 | `NEXTAUTH_URL` | https://ksavyad.com |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |

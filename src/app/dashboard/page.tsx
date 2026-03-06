@@ -131,6 +131,12 @@ export default function Dashboard() {
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-2xl font-bold">OCR Hebrew</h1>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => router.push("/training")}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            Training Data
+          </button>
           <span className="text-sm text-gray-500">{session?.user?.email}</span>
           <button onClick={() => signOut()} className="text-sm text-red-500 hover:underline">
             Sign Out
