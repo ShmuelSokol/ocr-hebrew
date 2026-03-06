@@ -440,24 +440,50 @@ export default function EditorPage() {
     ? result.lines.slice(0, reviewLineIdx).reduce((s, l) => s + l.words.length, 0) + reviewWordIdx + 1
     : 0;
 
-  function startReview() { setReviewLineIdx(0); setReviewWordIdx(0); setReviewEditing(false); setReviewMode(true); }
+  function startReview() {
+    if (!result) return;
+    // Find first line with words
+    const firstLine = result.lines.findIndex(l => l.words.length > 0);
+    setReviewLineIdx(firstLine >= 0 ? firstLine : 0);
+    setReviewWordIdx(0);
+    setReviewEditing(false);
+    setReviewMode(true);
+  }
 
   function reviewNext() {
     if (!result) return;
     setReviewEditing(false);
     const line = result.lines[reviewLineIdx];
-    if (reviewWordIdx < line.words.length - 1) setReviewWordIdx(reviewWordIdx + 1);
-    else if (reviewLineIdx < result.lines.length - 1) { setReviewLineIdx(reviewLineIdx + 1); setReviewWordIdx(0); }
+    if (reviewWordIdx < line.words.length - 1) {
+      setReviewWordIdx(reviewWordIdx + 1);
+    } else {
+      // Find next line that has words
+      for (let i = reviewLineIdx + 1; i < result.lines.length; i++) {
+        if (result.lines[i].words.length > 0) {
+          setReviewLineIdx(i);
+          setReviewWordIdx(0);
+          return;
+        }
+      }
+      // No more lines with words — stay at end
+    }
   }
 
   function reviewPrev() {
     if (!result) return;
     setReviewEditing(false);
-    if (reviewWordIdx > 0) setReviewWordIdx(reviewWordIdx - 1);
-    else if (reviewLineIdx > 0) {
-      const prevLine = result.lines[reviewLineIdx - 1];
-      setReviewLineIdx(reviewLineIdx - 1);
-      setReviewWordIdx(prevLine.words.length - 1);
+    if (reviewWordIdx > 0) {
+      setReviewWordIdx(reviewWordIdx - 1);
+    } else {
+      // Find previous line that has words
+      for (let i = reviewLineIdx - 1; i >= 0; i--) {
+        if (result.lines[i].words.length > 0) {
+          setReviewLineIdx(i);
+          setReviewWordIdx(result.lines[i].words.length - 1);
+          return;
+        }
+      }
+      // No previous lines with words — stay at start
     }
   }
 
@@ -627,7 +653,10 @@ export default function EditorPage() {
     if (!result || !reviewLine || !reviewWord) return null;
     const imgEl = imageRef.current;
     const isFirst = reviewLineIdx === 0 && reviewWordIdx === 0;
-    const isLast = reviewLineIdx === result.lines.length - 1 && reviewWordIdx === reviewLine.words.length - 1;
+    // Check if this is the last word across all lines (skipping empty lines)
+    const lastLineWithWords = result.lines.map((l, i) => l.words.length > 0 ? i : -1).filter(i => i >= 0);
+    const isLastLine = lastLineWithWords.length === 0 || reviewLineIdx === lastLineWithWords[lastLineWithWords.length - 1];
+    const isLast = isLastLine && reviewWordIdx === reviewLine.words.length - 1;
 
     return (
       <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">
