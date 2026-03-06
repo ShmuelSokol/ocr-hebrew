@@ -913,12 +913,6 @@ export default function EditorPage() {
                 {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
               </button>
             )}
-            {result && (
-              <button onClick={runTrOCR} disabled={trocrRunning}
-                className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50">
-                {trocrRunning ? "Running TrOCR..." : "Run TrOCR"}
-              </button>
-            )}
           </div>
           {ocrRunning && (
             <div className="mt-3 space-y-2">
@@ -932,7 +926,7 @@ export default function EditorPage() {
               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
               </div>
-              <p className="text-xs text-gray-400">{elapsedSeconds < 15 ? "Detecting lines..." : elapsedSeconds < 45 ? "Reading handwriting..." : "Almost done..."}</p>
+              <p className="text-xs text-gray-400">{elapsedSeconds < 15 ? "Detecting lines..." : elapsedSeconds < 45 ? "Reading handwriting..." : "Finishing up (+ TrOCR if available)..."}</p>
             </div>
           )}
           {trocrRunning && (
@@ -956,6 +950,10 @@ export default function EditorPage() {
               <button onClick={() => setTextSource("trocr")}
                 className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "trocr" ? "bg-indigo-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}>
                 TrOCR
+              </button>
+              <button onClick={runTrOCR} disabled={trocrRunning}
+                className="text-xs text-indigo-500 hover:text-indigo-700 underline disabled:opacity-50 ml-2">
+                {trocrRunning ? "Running..." : "Re-run TrOCR"}
               </button>
             </div>
           )}

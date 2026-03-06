@@ -6,6 +6,8 @@ import { runOCR } from "@/lib/ocr";
 import { supabase, BUCKET } from "@/lib/supabase";
 import path from "path";
 
+const TROCR_SERVER = process.env["TROCR_SERVER_URL"] || "http://localhost:8765";
+
 export async function POST(
   req: NextRequest,
   { params }: { params: { fileId: string } }
@@ -79,6 +81,10 @@ export async function POST(
 
     await prisma.file.update({ where: { id: file.id }, data: { status: "completed" } });
 
+    // Run TrOCR in background — silently skip if server is down
+    // Run TrOCR in background — silently skip if server is down
+    runTrOCR(file.storagePath, ocrResult.id).catch(() => {});
+
     return NextResponse.json({ ocrResult, rawText: result.rawText });
   } catch (error) {
     await prisma.file.update({ where: { id: file.id }, data: { status: "pending" } });
@@ -86,5 +92,66 @@ export async function POST(
       { error: error instanceof Error ? error.message : "OCR failed" },
       { status: 500 }
     );
+  }
+}
+
+async function runTrOCR(storagePath: string, ocrResultId: string) {
+  // Check if TrOCR server is available — bail silently if not
+  try {
+    const health = await fetch(`${TROCR_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!health.ok) return;
+  } catch {
+    return; // Server down (training running, Mac off, etc.) — skip silently
+  }
+
+  const ocrResult = await prisma.oCRResult.findUnique({
+    where: { id: ocrResultId },
+    include: { lines: { include: { words: { orderBy: { wordIndex: "asc" } } }, orderBy: { lineIndex: "asc" } } },
+  });
+  if (!ocrResult) return;
+
+  const { data: blob, error } = await supabase.storage.from(BUCKET).download(storagePath);
+  if (error || !blob) return;
+
+  const imageBuffer = Buffer.from(await blob.arrayBuffer());
+  const sharp = (await import("sharp")).default;
+
+  for (const line of ocrResult.lines) {
+    for (const word of line.words) {
+      if (word.xLeft == null || word.xRight == null) continue;
+
+      const pad = 3;
+      const left = Math.max(0, word.xLeft - pad);
+      const top = Math.max(0, line.yTop - pad);
+      const width = Math.min(word.xRight + pad, 10000) - left;
+      const height = Math.min(line.yBottom + pad, 10000) - top;
+      if (width < 5 || height < 5) continue;
+
+      try {
+        const cropBuffer = await sharp(imageBuffer)
+          .extract({ left, top, width, height })
+          .jpeg({ quality: 90 })
+          .toBuffer();
+
+        const formData = new FormData();
+        formData.append("image", new Blob([new Uint8Array(cropBuffer)], { type: "image/jpeg" }), "word.jpg");
+
+        const res = await fetch(`${TROCR_SERVER}/predict`, {
+          method: "POST",
+          body: formData,
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (res.ok) {
+          const result = await res.json();
+          await prisma.oCRWord.update({
+            where: { id: word.id },
+            data: { modelText: result.text || null },
+          });
+        }
+      } catch {
+        // Skip individual word failures
+      }
+    }
   }
 }
