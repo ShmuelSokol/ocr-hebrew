@@ -673,6 +673,7 @@ export async function runOCR(
     const wordRegions = wordTexts.length > 0
       ? segmentWords(grayData, imgWidth, pos.yTop, pos.yBottom, wordTexts.length)
       : [];
+    if (i < 5) console.log(`[OCR] Line ${i}: ${wordTexts.length} words, ${wordRegions.length} regions found`);
 
     const words: OCRWordResult[] = wordTexts.length > 0
       ? wordTexts.map((wt, wi) => ({
