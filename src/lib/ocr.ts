@@ -462,7 +462,101 @@ function correctWithDictionary(
   });
 }
 
+// ─── DocTR + TrOCR (In-House OCR) ───────────────────────
+
+const TROCR_SERVER = process.env["TROCR_SERVER_URL"] || "http://localhost:8765";
+
+async function ocrWithDocTR(
+  imageBuffer: Buffer,
+): Promise<{ lines: OCRLineResult[]; rawText: string }> {
+  // Step 1: Send full page image to DocTR /detect endpoint for bounding boxes
+  const formData = new FormData();
+  formData.append("image", new Blob([new Uint8Array(imageBuffer)], { type: "image/jpeg" }), "page.jpg");
+
+  const detectRes = await fetch(`${TROCR_SERVER}/detect`, {
+    method: "POST",
+    body: formData,
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!detectRes.ok) {
+    const err = await detectRes.text();
+    throw new Error(`DocTR detection failed (${detectRes.status}): ${err}`);
+  }
+
+  const detection = await detectRes.json();
+  console.log(`[OCR] DocTR: ${detection.total_words} words in ${detection.total_lines} lines (${detection.time_ms}ms)`);
+
+  if (!detection.lines || detection.lines.length === 0) {
+    return { lines: [], rawText: "" };
+  }
+
+  // Step 2: Crop each word and send to TrOCR /predict for text recognition
+  const sharp = (await import("sharp")).default;
+  const lines: OCRLineResult[] = [];
+
+  for (const detectLine of detection.lines) {
+    const words: OCRWordResult[] = [];
+
+    for (const wordBox of detectLine.words) {
+      const pad = 3;
+      const left = Math.max(0, wordBox.xLeft - pad);
+      const top = Math.max(0, wordBox.yTop - pad);
+      const width = Math.min(wordBox.xRight + pad, 10000) - left;
+      const height = Math.min(wordBox.yBottom + pad, 10000) - top;
+
+      if (width < 5 || height < 5) continue;
+
+      let text = "";
+      try {
+        const cropBuffer = await sharp(imageBuffer)
+          .extract({ left, top, width, height })
+          .jpeg({ quality: 90 })
+          .toBuffer();
+
+        const wordForm = new FormData();
+        wordForm.append("image", new Blob([new Uint8Array(cropBuffer)], { type: "image/jpeg" }), "word.jpg");
+
+        const predRes = await fetch(`${TROCR_SERVER}/predict`, {
+          method: "POST",
+          body: wordForm,
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (predRes.ok) {
+          const pred = await predRes.json();
+          text = pred.text || "";
+        }
+      } catch {
+        // Skip individual word failures
+      }
+
+      words.push({
+        text,
+        xLeft: wordBox.xLeft,
+        xRight: wordBox.xRight,
+        confidence: undefined,
+      });
+    }
+
+    lines.push({
+      lineIndex: detectLine.lineIndex,
+      yTop: detectLine.yTop,
+      yBottom: detectLine.yBottom,
+      text: words.map((w) => w.text).join(" "),
+      words,
+    });
+  }
+
+  const rawText = lines.map((l) => l.text).join("\n");
+  const totalWords = lines.reduce((s, l) => s + l.words.length, 0);
+  console.log(`[OCR] TrOCR: recognized ${totalWords} words`);
+  return { lines, rawText };
+}
+
 // ─── Main OCR Pipeline ──────────────────────────────────
+
+export type OCRMethod = "azure" | "doctr";
 
 export interface FewShotLine {
   lineIndex: number;
@@ -480,9 +574,17 @@ export async function runOCR(
   firstLineHint?: string,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   fewShotLines?: FewShotLine[],
+  method: OCRMethod = "azure",
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
-  // Azure Document Intelligence: word-level bounding boxes + Hebrew text in one call
-  const result = await ocrWithAzure(imageBuffer);
+  let result: { rawText: string; lines: OCRLineResult[] };
+
+  if (method === "doctr") {
+    // In-house: DocTR bounding boxes + TrOCR text recognition
+    result = await ocrWithDocTR(imageBuffer);
+  } else {
+    // Azure Document Intelligence: word-level bounding boxes + Hebrew text
+    result = await ocrWithAzure(imageBuffer);
+  }
 
   // Post-process: correct low-confidence words using verified training data
   const dict = await buildCorrectionDictionary(profileId);
@@ -499,15 +601,15 @@ export async function runOCR(
     console.log(`[OCR-Dict] Dictionary: ${dict.size} words, corrected ${corrected} lines`);
   }
 
-  // Track usage (Azure free tier: 500 pages/month, then $1/1000 pages)
+  // Track usage
   await prisma.tokenUsage.create({
     data: {
       userId,
       fileId,
-      model: "azure-doc-intelligence",
+      model: method === "doctr" ? "doctr-trocr" : "azure-doc-intelligence",
       inputTokens: 0,
       outputTokens: 0,
-      costCents: 0.1, // ~$1/1000 pages
+      costCents: method === "doctr" ? 0 : 0.1, // DocTR is free (local), Azure ~$1/1000
     },
   });
 

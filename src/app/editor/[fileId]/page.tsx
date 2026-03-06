@@ -103,6 +103,7 @@ export default function EditorPage() {
   const [result, setResult] = useState<OCRResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
+  const [ocrMethod, setOcrMethod] = useState<"azure" | "doctr">("azure");
   const [editingWord, setEditingWord] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [filename, setFilename] = useState("");
@@ -251,7 +252,8 @@ export default function EditorPage() {
     return lines;
   }
 
-  async function runOCR() {
+  async function runOCR(methodOverride?: "azure" | "doctr") {
+    const method = methodOverride || ocrMethod;
     setOcrRunning(true);
     setShowRerunBanner(false);
     setReviewMode(false);
@@ -259,7 +261,10 @@ export default function EditorPage() {
     const res = await fetch(`/api/files/${fileId}/ocr`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fewShotLines: fewShotLines.length > 0 ? fewShotLines : undefined }),
+      body: JSON.stringify({
+        fewShotLines: fewShotLines.length > 0 ? fewShotLines : undefined,
+        method,
+      }),
     });
     if (res.ok) { setTrainingMode(false); setCorrectionCount(0); await loadResult(); }
     else { const err = await res.json(); alert("OCR Error: " + (err.error || "Unknown error")); }
@@ -875,7 +880,7 @@ export default function EditorPage() {
           </div>
           <div className="flex gap-2">
             <button onClick={() => setShowRerunBanner(false)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Dismiss</button>
-            <button onClick={runOCR} disabled={ocrRunning} className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50">Re-run OCR</button>
+            <button onClick={() => runOCR()} disabled={ocrRunning} className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50">Re-run OCR</button>
           </div>
         </div>
       )}
@@ -896,7 +901,7 @@ export default function EditorPage() {
               <p className="text-sm text-blue-800"><strong>Training Mode:</strong> Type the text for each line. {trainingLineCount > 0 && <span className="text-green-700 font-medium">{trainingLineCount} line{trainingLineCount > 1 ? "s" : ""} entered</span>}</p>
               <div className="flex gap-2 mt-2">
                 <button onClick={() => { setTrainingMode(false); setDetectedLines([]); setTrainingTexts({}); }} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 border rounded">Cancel</button>
-                <button onClick={runOCR} disabled={ocrRunning || trainingLineCount === 0} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                <button onClick={() => runOCR()} disabled={ocrRunning || trainingLineCount === 0} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
                   Run OCR with {trainingLineCount} training line{trainingLineCount !== 1 ? "s" : ""}
                 </button>
               </div>
@@ -908,10 +913,21 @@ export default function EditorPage() {
             <button onClick={() => manualRotate(1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">&#8635; +1&deg;</button>
             <button onClick={preprocessImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">Enhance</button>
             {!trainingMode && (
-              <button onClick={runOCR} disabled={ocrRunning}
-                className={`px-4 sm:px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
-                {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
-              </button>
+              <div className="flex items-center gap-1">
+                <select
+                  value={ocrMethod}
+                  onChange={(e) => setOcrMethod(e.target.value as "azure" | "doctr")}
+                  disabled={ocrRunning}
+                  className="px-2 py-2 rounded-l text-sm border border-gray-300 bg-white text-gray-700 disabled:opacity-50"
+                >
+                  <option value="azure">Azure OCR</option>
+                  <option value="doctr">In-House (DocTR + TrOCR)</option>
+                </select>
+                <button onClick={() => runOCR()} disabled={ocrRunning}
+                  className={`px-4 sm:px-6 py-2 rounded-r text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
+                  {ocrRunning ? "Processing..." : result ? "Re-run" : "Run OCR"}
+                </button>
+              </div>
             )}
           </div>
           {ocrRunning && (
@@ -926,7 +942,10 @@ export default function EditorPage() {
               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
               </div>
-              <p className="text-xs text-gray-400">{elapsedSeconds < 15 ? "Detecting lines..." : elapsedSeconds < 45 ? "Reading handwriting..." : "Finishing up (+ TrOCR if available)..."}</p>
+              <p className="text-xs text-gray-400">{ocrMethod === "doctr"
+                ? (elapsedSeconds < 5 ? "DocTR: detecting word boxes..." : elapsedSeconds < 30 ? "TrOCR: recognizing words..." : "Finishing up...")
+                : (elapsedSeconds < 15 ? "Azure: detecting lines..." : elapsedSeconds < 45 ? "Azure: reading handwriting..." : "Finishing up (+ TrOCR if available)...")
+              }</p>
             </div>
           )}
           {trocrRunning && (

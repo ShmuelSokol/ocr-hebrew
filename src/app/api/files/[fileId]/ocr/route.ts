@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { runOCR } from "@/lib/ocr";
+import type { OCRMethod } from "@/lib/ocr";
 import { supabase, BUCKET } from "@/lib/supabase";
 import path from "path";
 
@@ -23,7 +24,8 @@ export async function POST(
 
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { firstLineHint, fewShotLines } = await req.json().catch(() => ({}));
+  const { firstLineHint, fewShotLines, method: requestedMethod } = await req.json().catch(() => ({}));
+  const method: OCRMethod = requestedMethod === "doctr" ? "doctr" : "azure";
 
   // Download image from Supabase Storage
   const { data: blob, error } = await supabase.storage
@@ -44,7 +46,7 @@ export async function POST(
   await prisma.file.update({ where: { id: file.id }, data: { status: "processing" } });
 
   try {
-    const result = await runOCR(base64, mediaType, imageData, userId, file.id, file.profileId || undefined, firstLineHint, fewShotLines);
+    const result = await runOCR(base64, mediaType, imageData, userId, file.id, file.profileId || undefined, firstLineHint, fewShotLines, method);
 
     // Delete old result if exists
     const oldResult = await prisma.oCRResult.findUnique({ where: { fileId: file.id } });
@@ -81,9 +83,11 @@ export async function POST(
 
     await prisma.file.update({ where: { id: file.id }, data: { status: "completed" } });
 
-    // Run TrOCR in background — silently skip if server is down
-    // Run TrOCR in background — silently skip if server is down
-    runTrOCR(file.storagePath, ocrResult.id).catch(() => {});
+    if (method === "azure") {
+      // Run TrOCR in background for Azure results — silently skip if server is down
+      runTrOCR(file.storagePath, ocrResult.id).catch(() => {});
+    }
+    // For DocTR method, TrOCR text is already in rawText (the pipeline does detect + recognize)
 
     return NextResponse.json({ ocrResult, rawText: result.rawText });
   } catch (error) {

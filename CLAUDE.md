@@ -1,14 +1,16 @@
 # OCR Hebrew (ksavyad.com)
 
-Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital text using Azure Document Intelligence OCR.
+Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital text using Azure Document Intelligence OCR or in-house DocTR + TrOCR pipeline.
 
 ## Architecture
 
 - **Framework**: Next.js 14 App Router + TypeScript
 - **Database**: Supabase PostgreSQL (via Prisma ORM v5)
 - **File Storage**: Supabase Storage (bucket: `uploads`)
-- **OCR Engine**: Azure Document Intelligence (`prebuilt-read` with `locale=he`) — word-level bounding boxes + Hebrew text
-- **Fine-Tuning**: TrOCR-small (local, Python + PyTorch MPS on Mac Mini M4)
+- **OCR Engine (Azure)**: Azure Document Intelligence (`prebuilt-read` with `locale=he`) — word-level bounding boxes + Hebrew text + dictionary correction post-processing
+- **OCR Engine (In-House)**: DocTR (`db_resnet50`) for word detection + TrOCR for text recognition — fully local, no API costs
+- **TrOCR Model**: TrOCR-small fine-tuned on user corrections (local, Python + PyTorch MPS on Mac Mini M4)
+- **Inference Server**: FastAPI (`training/serve.py`) exposed via Cloudflare Tunnel (`trocr.ksavyad.com` → `localhost:8765`). Endpoints: `/predict` (TrOCR word recognition), `/predict_batch`, `/detect` (DocTR word detection)
 - **Auth**: NextAuth.js with credentials provider (email/password)
 - **Hosting**: Railway (Docker, standalone Next.js)
 - **Domain**: ksavyad.com (Cloudflare DNS)
@@ -18,7 +20,7 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 
 | File | Purpose |
 |------|---------|
-| `src/lib/ocr.ts` | Core OCR engine — Azure Document Intelligence, line detection, skew detection |
+| `src/lib/ocr.ts` | Core OCR engine — Azure + DocTR methods, line detection, skew detection |
 | `src/lib/supabase.ts` | Supabase client for storage (lazy Proxy pattern) |
 | `src/lib/prisma.ts` | Prisma client singleton |
 | `src/lib/auth.ts` | NextAuth config |
@@ -31,7 +33,8 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 | `src/app/api/training/status/route.ts` | Serve live training status from `status.json` |
 | `src/app/api/training/[id]/image/route.ts` | Serve training example word crop images |
 | `src/app/api/files/route.ts` | File upload (to Supabase Storage) and listing |
-| `src/app/api/files/[fileId]/ocr/route.ts` | Run OCR on a file |
+| `src/app/api/files/[fileId]/ocr/route.ts` | Run OCR on a file (Azure or DocTR method, selectable) |
+| `src/app/api/files/[fileId]/trocr/route.ts` | Re-run TrOCR inference on existing OCR results |
 | `src/app/api/files/[fileId]/image/route.ts` | Serve images from Supabase Storage |
 | `src/app/api/words/[wordId]/route.ts` | Word correction — saves to handwriting profile + training example |
 | `prisma/schema.prisma` | Database schema |
@@ -39,21 +42,36 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 
 ## Database Schema (Prisma)
 
-Models: User, HandwritingProfile, File, OCRResult, OCRLine, OCRWord, TokenUsage, Correction, TrainingExample
+Models: User, HandwritingProfile, File, OCRResult, OCRLine, OCRWord (has `modelText` for TrOCR), TokenUsage, Correction, TrainingExample
 
 - Uses pooled connection on port 6543 (`DATABASE_URL`) and session mode on port 5432 (`DIRECT_URL`)
 - Binary targets: `native` + `linux-musl-openssl-3.0.x` (for Alpine Docker)
 
 ## How OCR Works
 
+Two methods available, selectable in the editor UI via dropdown:
+
+### Azure OCR (default)
 1. Image uploaded to Supabase Storage
 2. Azure Document Intelligence `prebuilt-read` called with `locale=he`
 3. Azure returns word-level polygons (4-corner bounding boxes) + Hebrew text + confidence
 4. Words grouped into lines by matching y-coordinates to Azure's line polygons
 5. Words sorted right-to-left (Hebrew RTL) within each line
 6. Results stored as OCRResult → OCRLine → OCRWord hierarchy (with confidence scores)
-7. User reviews word crops and corrects text in editor
-8. Corrections auto-saved as TrainingExample (word crop image + corrected text) for fine-tuning
+7. Dictionary correction: low-confidence words matched against verified training examples by edit distance
+8. TrOCR auto-runs in background (if server available): crops each word, sends to TrOCR server, saves to `modelText`
+
+### In-House DocTR + TrOCR (free, requires local server)
+1. Full page image sent to `/detect` endpoint on TrOCR server (DocTR `db_resnet50`)
+2. DocTR returns word-level bounding boxes grouped into lines (sorted RTL for Hebrew)
+3. Each word cropped and sent to `/predict` endpoint (TrOCR fine-tuned model)
+4. Results stored in same OCRResult → OCRLine → OCRWord hierarchy
+5. No background TrOCR needed (text recognition already included in pipeline)
+6. Benchmarked at 87.4% F1 vs Azure boxes across 6 diverse pages (2215 words)
+
+### Common
+- User reviews word crops and corrects text in editor (can toggle Azure/TrOCR text)
+- Corrections auto-saved as TrainingExample (word crop image + corrected text) for fine-tuning
 
 ## Fine-Tuning Pipeline
 
@@ -66,6 +84,9 @@ Located in `../training/` (sibling to `web/` directory).
 | `validate_data.py` | Audit data quality (images, labels, duplicates) |
 | `train.py` | TrOCR-small fine-tuning (MPS, augmentation, early stopping, checkpoints) |
 | `inference.py` | Run inference on single images, directories, or benchmark |
+| `serve.py` | FastAPI inference server — TrOCR `/predict` + DocTR `/detect` endpoints |
+| `benchmark_boxes.py` | Bounding box detection benchmark (DocTR, CC, PP methods vs Azure) |
+| `benchmark_multi.py` | Multi-page benchmark across database pages |
 
 Training writes `output/status.json` which the web dashboard reads for live monitoring.
 
@@ -75,9 +96,21 @@ cd ocr-hebrew/training
 source venv/bin/activate
 python download_data.py --cookie SESSION_COOKIE
 python validate_data.py
-python train.py
+python train.py          # Auto-resumes from previous best checkpoint
+python train.py --fresh  # Start from base model (ignore previous)
 python inference.py --model output/checkpoints/best --image word.jpg
 ```
+
+### Serving the model:
+```bash
+cd ocr-hebrew/training
+source venv/bin/activate
+python serve.py          # Starts on port 8765
+```
+- Cloudflare Tunnel maps `trocr.ksavyad.com` → `localhost:8765`
+- Tunnel runs as a brew service (`brew services start cloudflared`)
+- Config at `~/.cloudflared/config.yml`, tunnel ID: `e28ffe57-2733-490b-87ac-fb8d6e9641c2`
+- Cannot run simultaneously with training (both need GPU/model in memory)
 
 ## Deployment
 
@@ -102,6 +135,7 @@ Or use the `/deploy` skill which commits, pushes to GitHub, and deploys.
 | `NEXTAUTH_URL` | https://ksavyad.com |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role for storage access |
+| `TROCR_SERVER_URL` | TrOCR inference server (`https://trocr.ksavyad.com`) |
 
 ### Docker Notes
 
