@@ -443,16 +443,16 @@ function correctWithDictionary(
     let bestFreq = 0;
     const maxDist = Math.min(maxEditDist, Math.floor(text.length * 0.4));
 
-    for (const [dictWord, freq] of dict) {
+    dict.forEach((freq, dictWord) => {
       // Quick length filter
-      if (Math.abs(dictWord.length - text.length) > maxDist) continue;
+      if (Math.abs(dictWord.length - text.length) > maxDist) return;
       const dist = editDistance(text, dictWord);
       if (dist < bestDist || (dist === bestDist && freq > bestFreq)) {
         bestDist = dist;
         bestMatch = dictWord;
         bestFreq = freq;
       }
-    }
+    });
 
     if (bestDist > 0 && bestDist <= maxDist && bestMatch) {
       console.log(`[OCR-Dict] "${text}" -> "${bestMatch}" (dist=${bestDist}, freq=${bestFreq}, conf=${word.confidence?.toFixed(2)})`);
