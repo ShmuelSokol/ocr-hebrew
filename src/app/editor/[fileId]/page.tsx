@@ -993,6 +993,13 @@ export default function EditorPage() {
 
               {/* Action buttons */}
               <div className="flex gap-1.5 shrink-0">
+                {profileId && !confirmedWords.has(selectedWord!.id) && (
+                  <button onClick={() => { confirmWordCorrect(selectedWord!.id); editNextWord(selectedWord!.id); }}
+                    className="flex-1 sm:flex-none bg-blue-500 text-white px-3 py-3 sm:py-2 rounded-lg font-medium hover:bg-blue-600 active:bg-blue-700 text-base sm:text-sm">Correct</button>
+                )}
+                {profileId && confirmedWords.has(selectedWord!.id) && (
+                  <span className="flex-1 sm:flex-none bg-blue-200 text-blue-800 px-3 py-3 sm:py-2 rounded-lg font-medium text-base sm:text-sm text-center">Saved</span>
+                )}
                 <button onClick={() => saveAndNext(selectedWord!.id, editValue)}
                   className="flex-1 sm:flex-none bg-green-500 text-white px-3 py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 active:bg-green-700 text-base sm:text-sm">Next</button>
                 <button onClick={() => setEditingWord(null)}
