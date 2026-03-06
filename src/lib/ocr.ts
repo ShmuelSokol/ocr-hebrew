@@ -390,6 +390,78 @@ async function ocrWithAzure(
   /* eslint-enable @typescript-eslint/no-explicit-any */
 }
 
+// ─── Dictionary Correction ──────────────────────────────
+
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+async function buildCorrectionDictionary(profileId?: string): Promise<Map<string, number>> {
+  const where = profileId ? { profileId } : {};
+  const examples = await prisma.trainingExample.findMany({
+    where,
+    select: { text: true },
+  });
+  const dict = new Map<string, number>();
+  for (const ex of examples) {
+    const t = ex.text.trim();
+    if (t) dict.set(t, (dict.get(t) || 0) + 1);
+  }
+  return dict;
+}
+
+function correctWithDictionary(
+  words: OCRWordResult[],
+  dict: Map<string, number>,
+  confidenceThreshold: number = 0.85,
+  maxEditDist: number = 2,
+): OCRWordResult[] {
+  if (dict.size === 0) return words;
+
+  return words.map((word) => {
+    const text = word.text.trim();
+    if (!text || text.length <= 1) return word;
+    // Skip if already in dictionary (exact match)
+    if (dict.has(text)) return word;
+    // Only correct low-confidence words
+    if (word.confidence !== undefined && word.confidence >= confidenceThreshold) return word;
+
+    // Find closest dictionary match
+    let bestMatch = "";
+    let bestDist = Infinity;
+    let bestFreq = 0;
+    const maxDist = Math.min(maxEditDist, Math.floor(text.length * 0.4));
+
+    for (const [dictWord, freq] of dict) {
+      // Quick length filter
+      if (Math.abs(dictWord.length - text.length) > maxDist) continue;
+      const dist = editDistance(text, dictWord);
+      if (dist < bestDist || (dist === bestDist && freq > bestFreq)) {
+        bestDist = dist;
+        bestMatch = dictWord;
+        bestFreq = freq;
+      }
+    }
+
+    if (bestDist > 0 && bestDist <= maxDist && bestMatch) {
+      console.log(`[OCR-Dict] "${text}" -> "${bestMatch}" (dist=${bestDist}, freq=${bestFreq}, conf=${word.confidence?.toFixed(2)})`);
+      return { ...word, text: bestMatch };
+    }
+    return word;
+  });
+}
+
 // ─── Main OCR Pipeline ──────────────────────────────────
 
 export interface FewShotLine {
@@ -403,7 +475,6 @@ export async function runOCR(
   imageBuffer: Buffer,
   userId: string,
   fileId: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   profileId?: string,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   firstLineHint?: string,
@@ -412,6 +483,21 @@ export async function runOCR(
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
   // Azure Document Intelligence: word-level bounding boxes + Hebrew text in one call
   const result = await ocrWithAzure(imageBuffer);
+
+  // Post-process: correct low-confidence words using verified training data
+  const dict = await buildCorrectionDictionary(profileId);
+  if (dict.size > 0) {
+    let corrected = 0;
+    for (const line of result.lines) {
+      const before = line.words.map((w) => w.text).join(" ");
+      line.words = correctWithDictionary(line.words, dict);
+      const after = line.words.map((w) => w.text).join(" ");
+      if (before !== after) corrected++;
+      line.text = line.words.map((w) => w.text).join(" ");
+    }
+    result.rawText = result.lines.map((l) => l.text).join("\n");
+    console.log(`[OCR-Dict] Dictionary: ${dict.size} words, corrected ${corrected} lines`);
+  }
 
   // Track usage (Azure free tier: 500 pages/month, then $1/1000 pages)
   await prisma.tokenUsage.create({
