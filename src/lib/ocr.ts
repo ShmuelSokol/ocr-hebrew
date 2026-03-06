@@ -680,7 +680,9 @@ export async function runOCR(
   // Line-by-line OCR already returns exactly one result per detected line
   const alignedTexts = ocrResult.lines;
 
-  // Word segmentation: find word boundaries in the image for each line
+  // Find ink bounds per line and assign word positions proportionally.
+  // This is more robust than column-projection segmentation which breaks
+  // when noise regions cause off-by-one shifts across all words.
   const sharp = (await import("sharp")).default;
   const { data: grayData, info: grayInfo } = await sharp(imageBuffer)
     .greyscale()
@@ -688,32 +690,50 @@ export async function runOCR(
     .toBuffer({ resolveWithObject: true });
   const imgWidth = grayInfo.width;
 
-  // Build results — words are text splits with x-coordinates from segmentation
   const lines: OCRLineResult[] = detectedLines.map((pos, i) => {
     const text = alignedTexts[i] || "[?]";
     const wordTexts = text.split(/\s+/).filter(w => w.length > 0);
 
-    // Segment words in this line's image region
-    const wordRegions = wordTexts.length > 0
-      ? segmentWords(grayData, imgWidth, pos.yTop, pos.yBottom, wordTexts.length)
-      : [];
-    if (i < 5) console.log(`[OCR] Line ${i}: ${wordTexts.length} words, ${wordRegions.length} regions found`);
+    if (wordTexts.length === 0) {
+      return { lineIndex: i, yTop: pos.yTop, yBottom: pos.yBottom, text, words: [{ text: "[?]", xLeft: null, xRight: null }] };
+    }
 
-    const words: OCRWordResult[] = wordTexts.length > 0
-      ? wordTexts.map((wt, wi) => ({
-          text: wt,
-          xLeft: wi < wordRegions.length ? wordRegions[wi].xLeft : null,
-          xRight: wi < wordRegions.length ? wordRegions[wi].xRight : null,
-        }))
-      : [{ text: "[?]", xLeft: null, xRight: null }];
+    // Find the actual ink bounds for this line (skip margin whitespace)
+    const lineHeight = pos.yBottom - pos.yTop;
+    let inkLeft = imgWidth, inkRight = 0;
+    for (let x = 0; x < imgWidth; x++) {
+      let dark = 0;
+      for (let y = pos.yTop; y < pos.yBottom; y++) {
+        if (grayData[y * imgWidth + x] < 160) dark++;
+      }
+      if (dark / lineHeight > 0.02) {
+        if (x < inkLeft) inkLeft = x;
+        if (x > inkRight) inkRight = x;
+      }
+    }
 
-    return {
-      lineIndex: i,
-      yTop: pos.yTop,
-      yBottom: pos.yBottom,
-      text,
-      words,
-    };
+    // Fallback if no ink found
+    if (inkLeft >= inkRight) {
+      const words = wordTexts.map(wt => ({ text: wt, xLeft: null, xRight: null }));
+      return { lineIndex: i, yTop: pos.yTop, yBottom: pos.yBottom, text, words };
+    }
+
+    // Divide ink span proportionally by character count (RTL: first word is rightmost)
+    const totalChars = wordTexts.reduce((sum, w) => sum + w.length, 0);
+    const inkSpan = inkRight - inkLeft;
+    const words: OCRWordResult[] = [];
+    let cursor = inkRight; // start from right side (RTL)
+
+    for (let wi = 0; wi < wordTexts.length; wi++) {
+      const charFrac = wordTexts[wi].length / totalChars;
+      const wordWidth = Math.round(inkSpan * charFrac);
+      const xLeft = Math.max(inkLeft, cursor - wordWidth);
+      const xRight = cursor;
+      words.push({ text: wordTexts[wi], xLeft, xRight });
+      cursor = xLeft; // next word starts where this one ended
+    }
+
+    return { lineIndex: i, yTop: pos.yTop, yBottom: pos.yBottom, text, words };
   });
 
   const rawText = lines.map((l) => l.text).join("\n");
