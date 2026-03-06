@@ -90,6 +90,15 @@ Located in `../training/` (sibling to `web/` directory).
 
 Training writes `output/status.json` which the web dashboard reads for live monitoring.
 
+### Initial setup (from scratch):
+```bash
+cd ocr-hebrew/training
+bash setup.sh            # Installs Python 3.11, creates venv, installs PyTorch + training deps
+source venv/bin/activate
+# Install serving/inference server deps (not covered by setup.sh):
+pip install fastapi uvicorn python-multipart python-doctr[torch] opencv-python-headless
+```
+
 ### Training workflow:
 ```bash
 cd ocr-hebrew/training
@@ -101,12 +110,18 @@ python train.py --fresh  # Start from base model (ignore previous)
 python inference.py --model output/checkpoints/best --image word.jpg
 ```
 
-### Serving the model:
+### Serving the model (TrOCR + DocTR):
 ```bash
 cd ocr-hebrew/training
 source venv/bin/activate
+
+# Install serving dependencies (not in requirements.txt):
+pip install fastapi uvicorn python-multipart python-doctr[torch] opencv-python-headless
+
 python serve.py          # Starts on port 8765
 ```
+- Endpoints: `GET /health`, `POST /predict` (TrOCR), `POST /predict_batch`, `POST /detect` (DocTR)
+- DocTR model (`db_resnet50`) lazy-loads on first `/detect` call
 - Cloudflare Tunnel maps `trocr.ksavyad.com` → `localhost:8765`
 - Tunnel runs as a brew service (`brew services start cloudflared`)
 - Config at `~/.cloudflared/config.yml`, tunnel ID: `e28ffe57-2733-490b-87ac-fb8d6e9641c2`
