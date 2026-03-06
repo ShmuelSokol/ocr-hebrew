@@ -76,6 +76,7 @@ model OCRWord {
   wordIndex   Int
   rawText     String
   correctedText String?
+  modelText   String?
   confidence  Float?
   xLeft       Int?
   xRight      Int?

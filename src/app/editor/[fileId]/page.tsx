@@ -8,6 +8,7 @@ interface Word {
   wordIndex: number;
   rawText: string;
   correctedText: string | null;
+  modelText: string | null;
   xLeft: number | null;
   xRight: number | null;
 }
@@ -132,6 +133,9 @@ export default function EditorPage() {
   // This counter triggers canvas re-draws when the image changes
   const [imageVersion, setImageVersion] = useState(0);
   const [confirmedWords, setConfirmedWords] = useState<Set<string>>(new Set());
+  const [trocrRunning, setTrocrRunning] = useState(false);
+  const [trocrProgress, setTrocrProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [textSource, setTextSource] = useState<"azure" | "trocr">("azure");
 
   const imageRef = useRef<HTMLImageElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -260,6 +264,22 @@ export default function EditorPage() {
     if (res.ok) { setTrainingMode(false); setCorrectionCount(0); await loadResult(); }
     else { const err = await res.json(); alert("OCR Error: " + (err.error || "Unknown error")); }
     setOcrRunning(false);
+  }
+
+  async function runTrOCR() {
+    setTrocrRunning(true);
+    setTrocrProgress(null);
+    const res = await fetch(`/api/files/${fileId}/trocr`, { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      setTrocrProgress({ processed: data.processed, total: data.total });
+      setTextSource("trocr");
+      await loadResult();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert("TrOCR Error: " + (err.error || "Unknown error"));
+    }
+    setTrocrRunning(false);
   }
 
   async function preprocessImage() {
@@ -401,7 +421,7 @@ export default function EditorPage() {
 
   function startEdit(word: Word) {
     setEditingWord(word.id);
-    setEditValue(word.correctedText || word.rawText);
+    setEditValue(word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText));
     setTimeout(() => editInputRef.current?.focus(), 50);
   }
 
@@ -585,7 +605,7 @@ export default function EditorPage() {
                   const isCorrected = word.correctedText && word.correctedText !== word.rawText;
                   const isConfirmed = confirmedWords.has(word.id);
                   const isSelected = editingWord === word.id;
-                  const displayText = word.correctedText || word.rawText;
+                  const displayText = word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText);
 
                   return (
                     <div key={word.id} className="inline-flex flex-col items-center">
@@ -611,9 +631,13 @@ export default function EditorPage() {
                           <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-bold text-gray-900 ${word.xLeft != null ? "border-t border-gray-200" : ""} ${
                             isSelected ? "bg-orange-100" :
                             isCorrected ? "bg-green-100" :
-                            isConfirmed ? "bg-blue-100" : "bg-gray-50"
+                            isConfirmed ? "bg-blue-100" :
+                            textSource === "trocr" && word.modelText ? "bg-indigo-50" : "bg-gray-50"
                           }`} dir="rtl">
                             {displayText}
+                            {textSource === "trocr" && word.modelText && !isCorrected && word.modelText !== word.rawText && (
+                              <div className="text-[9px] text-gray-400 font-normal">azure: {word.rawText}</div>
+                            )}
                           </div>
                         </button>
 
@@ -680,9 +704,12 @@ export default function EditorPage() {
 
         {/* Focused word text */}
         <div className="bg-white border-2 border-blue-200 rounded-xl p-4 sm:p-6 text-center space-y-3">
-          <div className="text-2xl sm:text-3xl font-bold" dir="rtl">{reviewWord.correctedText || reviewWord.rawText}</div>
+          <div className="text-2xl sm:text-3xl font-bold" dir="rtl">{reviewWord.correctedText || (textSource === "trocr" && reviewWord.modelText ? reviewWord.modelText : reviewWord.rawText)}</div>
           {reviewWord.correctedText && reviewWord.correctedText !== reviewWord.rawText && (
             <div className="text-xs sm:text-sm text-gray-400">Original: <span className="font-mono">{reviewWord.rawText}</span></div>
+          )}
+          {reviewWord.modelText && reviewWord.modelText !== reviewWord.rawText && (
+            <div className="text-xs sm:text-sm text-gray-400">TrOCR: <span className="font-mono">{reviewWord.modelText}</span></div>
           )}
 
           {reviewEditing ? (
@@ -725,7 +752,7 @@ export default function EditorPage() {
               <span key={w.id} className={`px-1.5 sm:px-2 py-0.5 sm:py-1 rounded ${wi === reviewWordIdx
                 ? "bg-blue-500 text-white font-bold ring-2 ring-blue-300"
                 : w.correctedText ? "bg-green-100 text-green-800" : "text-gray-600"}`}>
-                {w.correctedText || w.rawText}
+                {w.correctedText || (textSource === "trocr" && w.modelText ? w.modelText : w.rawText)}
               </span>
             ))}
           </div>
@@ -886,6 +913,12 @@ export default function EditorPage() {
                 {ocrRunning ? "Processing..." : result ? "Re-run OCR" : "Run OCR"}
               </button>
             )}
+            {result && (
+              <button onClick={runTrOCR} disabled={trocrRunning}
+                className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50">
+                {trocrRunning ? "Running TrOCR..." : "Run TrOCR"}
+              </button>
+            )}
           </div>
           {ocrRunning && (
             <div className="mt-3 space-y-2">
@@ -900,6 +933,30 @@ export default function EditorPage() {
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
               </div>
               <p className="text-xs text-gray-400">{elapsedSeconds < 15 ? "Detecting lines..." : elapsedSeconds < 45 ? "Reading handwriting..." : "Almost done..."}</p>
+            </div>
+          )}
+          {trocrRunning && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-indigo-600">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600"></div>
+              <span>Running TrOCR on each word...</span>
+            </div>
+          )}
+          {trocrProgress && !trocrRunning && (
+            <div className="mt-3 text-sm text-indigo-600">
+              TrOCR: {trocrProgress.processed} words processed{trocrProgress.total > trocrProgress.processed ? `, ${trocrProgress.total - trocrProgress.processed} failed` : ""}
+            </div>
+          )}
+          {result && result.lines.some(l => l.words.some(w => w.modelText)) && (
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-xs text-gray-500">Show text from:</span>
+              <button onClick={() => setTextSource("azure")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "azure" ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}>
+                Azure
+              </button>
+              <button onClick={() => setTextSource("trocr")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "trocr" ? "bg-indigo-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}>
+                TrOCR
+              </button>
             </div>
           )}
         </div>
@@ -968,6 +1025,9 @@ export default function EditorPage() {
                 </div>
                 <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
                   <span className="text-sm font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>
+                  {selectedWord.modelText && selectedWord.modelText !== selectedWord.rawText && (
+                    <span className="text-xs font-mono bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded truncate">{selectedWord.modelText}</span>
+                  )}
                   <span className="text-[10px] text-gray-400">{wordIdx + 1}/{allWords.length}</span>
                 </div>
               </div>
