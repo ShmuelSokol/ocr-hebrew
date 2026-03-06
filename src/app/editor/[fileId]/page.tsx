@@ -582,10 +582,10 @@ export default function EditorPage() {
                           )}
 
                           {/* OCR text */}
-                          <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-medium ${word.xLeft != null ? "border-t" : ""} ${
+                          <div className={`w-full text-center px-2 sm:px-3 py-1.5 sm:py-2 text-sm sm:text-base font-bold text-gray-900 ${word.xLeft != null ? "border-t border-gray-200" : ""} ${
                             isSelected ? "bg-orange-100" :
-                            isCorrected ? "bg-green-50" :
-                            isConfirmed ? "bg-blue-50" : ""
+                            isCorrected ? "bg-green-100" :
+                            isConfirmed ? "bg-blue-100" : "bg-gray-50"
                           }`} dir="rtl">
                             {displayText}
                           </div>
@@ -847,10 +847,10 @@ export default function EditorPage() {
             </div>
           )}
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-            <button onClick={straightenImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">Straighten</button>
-            <button onClick={() => manualRotate(-1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">&#8634; -1&deg;</button>
-            <button onClick={() => manualRotate(1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">&#8635; +1&deg;</button>
-            <button onClick={preprocessImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-200 hover:bg-gray-300 active:bg-gray-400">Enhance</button>
+            <button onClick={straightenImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">Straighten</button>
+            <button onClick={() => manualRotate(-1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">&#8634; -1&deg;</button>
+            <button onClick={() => manualRotate(1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">&#8635; +1&deg;</button>
+            <button onClick={preprocessImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">Enhance</button>
             {!trainingMode && (
               <button onClick={runOCR} disabled={ocrRunning}
                 className={`px-4 sm:px-6 py-2 rounded text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
