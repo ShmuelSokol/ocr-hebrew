@@ -34,10 +34,11 @@ model HandwritingProfile {
 }
 
 model File {
-  id          String   @id @default(cuid())
-  filename    String
-  storagePath String
-  status      String   @default("pending")
+  id                  String   @id @default(cuid())
+  filename            String
+  storagePath         String
+  originalStoragePath String?
+  status              String   @default("pending")
   userId      String
   user        User     @relation(fields: [userId], references: [id])
   profileId   String?

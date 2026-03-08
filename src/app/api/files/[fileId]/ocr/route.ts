@@ -23,7 +23,7 @@ export async function POST(
 
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { firstLineHint, fewShotLines, method: requestedMethod } = await req.json().catch(() => ({}));
+  const { firstLineHint, fewShotLines, method: requestedMethod, skipPreprocess } = await req.json().catch(() => ({}));
   const method: OCRMethod = requestedMethod === "doctr" ? "doctr" : "azure";
 
   // Download image from Supabase Storage
@@ -35,35 +35,46 @@ export async function POST(
     return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
   }
 
-  const rawImageData = Buffer.from(await blob.arrayBuffer());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let imageData: any = Buffer.from(await blob.arrayBuffer());
 
-  // Auto-straighten and enhance the image
-  const sharp = (await import("sharp")).default;
+  // Auto-straighten and enhance (skip if client already did it via stepper)
+  if (!skipPreprocess) {
+    const sharp = (await import("sharp")).default;
 
-  // Step 1: EXIF rotation + normalize + sharpen
-  let imageData = await sharp(rawImageData)
-    .rotate()              // auto-rotate from EXIF
-    .normalize()           // auto contrast/levels
-    .sharpen({ sigma: 1.0 }) // mild sharpen for text clarity
-    .jpeg({ quality: 95 })
-    .toBuffer();
-
-  // Step 2: Deskew using JS-based skew detection (same as Straighten button)
-  const skewAngle = await detectSkew(imageData);
-  if (Math.abs(skewAngle) >= 0.1) {
-    const correctionAngle = -skewAngle;
+    // Step 1: EXIF rotation + normalize + sharpen
     imageData = await sharp(imageData)
-      .rotate(correctionAngle, { background: "#ffffff" })
+      .rotate()              // auto-rotate from EXIF
+      .normalize()           // auto contrast/levels
+      .sharpen({ sigma: 1.0 }) // mild sharpen for text clarity
       .jpeg({ quality: 95 })
       .toBuffer();
-    console.log(`[OCR] Deskewed image by ${correctionAngle}° (detected skew: ${skewAngle}°)`);
-  }
 
-  // Save the enhanced image back to storage so the editor shows the corrected version
-  await supabase.storage.from(BUCKET).upload(file.storagePath, imageData, {
-    contentType: "image/jpeg",
-    upsert: true,
-  });
+    // Step 2: Deskew using JS-based skew detection (same as Straighten button)
+    const skewAngle = await detectSkew(imageData);
+    if (Math.abs(skewAngle) >= 0.1) {
+      const correctionAngle = -skewAngle;
+      imageData = await sharp(imageData)
+        .rotate(correctionAngle, { background: "#ffffff" })
+        .jpeg({ quality: 95 })
+        .toBuffer();
+      console.log(`[OCR] Deskewed image by ${correctionAngle}° (detected skew: ${skewAngle}°)`);
+    }
+
+    // Save enhanced image to a separate path (preserve original)
+    const processedPath = file.storagePath.replace(/_processed(?=\.[^.]+$)/, "").replace(/(\.[^.]+)$/, "_processed$1");
+    await supabase.storage.from(BUCKET).upload(processedPath, imageData, {
+      contentType: "image/jpeg",
+      upsert: true,
+    });
+    await prisma.file.update({
+      where: { id: file.id },
+      data: {
+        storagePath: processedPath,
+        ...(file.originalStoragePath ? {} : { originalStoragePath: file.storagePath }),
+      },
+    });
+  }
 
   const base64 = imageData.toString("base64");
   const mediaType = "image/jpeg";

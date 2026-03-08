@@ -71,10 +71,13 @@ export async function POST(
     upsert: true,
   });
 
-  // Update file record
+  // Update file record (preserve original on first preprocess)
   await prisma.file.update({
     where: { id: file.id },
-    data: { storagePath: newPath },
+    data: {
+      storagePath: newPath,
+      ...(file.originalStoragePath ? {} : { originalStoragePath: file.storagePath }),
+    },
   });
 
   return NextResponse.json({

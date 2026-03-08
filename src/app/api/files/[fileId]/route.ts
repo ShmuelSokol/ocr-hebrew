@@ -28,8 +28,12 @@ export async function DELETE(
   // Delete token usage
   await prisma.tokenUsage.deleteMany({ where: { fileId: file.id } });
 
-  // Delete file from Supabase Storage
-  await supabase.storage.from(BUCKET).remove([file.storagePath]);
+  // Delete file from Supabase Storage (both processed and original)
+  const pathsToDelete = [file.storagePath];
+  if (file.originalStoragePath && file.originalStoragePath !== file.storagePath) {
+    pathsToDelete.push(file.originalStoragePath);
+  }
+  await supabase.storage.from(BUCKET).remove(pathsToDelete);
 
   // Delete DB record
   await prisma.file.delete({ where: { id: file.id } });

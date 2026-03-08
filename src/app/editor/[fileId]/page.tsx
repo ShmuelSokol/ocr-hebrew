@@ -2,6 +2,7 @@
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { useEffect, useState, useCallback, useRef } from "react";
+import OcrStepper from "@/components/OcrStepper";
 
 interface Word {
   id: string;
@@ -119,6 +120,7 @@ export default function EditorPage() {
     id: string; storagePath: string; text: string; createdAt: string;
   }[]>([]);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
+  const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [correctionCount, setCorrectionCount] = useState(0);
   const [showRerunBanner, setShowRerunBanner] = useState(false);
@@ -206,6 +208,7 @@ export default function EditorPage() {
   function onImageLoad() {
     if (imageRef.current) {
       setImageNaturalHeight(imageRef.current.naturalHeight);
+      setImageNaturalWidth(imageRef.current.naturalWidth);
       setImageVersion((v) => v + 1);
     }
   }
@@ -303,25 +306,6 @@ export default function EditorPage() {
       setImageCacheBust(bust);
       if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
       if (data.skewAngle && Math.abs(data.skewAngle) > 0.1) alert(`Straightened image by ${data.skewAngle.toFixed(1)}deg`);
-    }
-  }
-
-  async function straightenImage() {
-    const res = await fetch(`/api/files/${fileId}/preprocess`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deskew: true }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const bust = Date.now();
-      setImageCacheBust(bust);
-      if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
-      if (Math.abs(data.skewAngle) < 0.1) alert("Image appears straight. Try 'Enhance Image' for full processing.");
-      else alert(`Straightened by ${data.skewAngle.toFixed(1)}deg`);
-    } else {
-      const err = await res.json().catch(() => ({}));
-      alert("Straighten failed: " + (err.error || "Unknown error"));
     }
   }
 
@@ -1040,29 +1024,50 @@ export default function EditorPage() {
               </div>
             </div>
           )}
+          {/* Method selector + manual tools */}
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-            <button onClick={straightenImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">Straighten</button>
+            {!trainingMode && (
+              <select
+                value={ocrMethod}
+                onChange={(e) => setOcrMethod(e.target.value as "azure" | "doctr")}
+                disabled={ocrRunning}
+                className="px-2 py-2 rounded text-sm border border-gray-300 bg-white text-gray-700 disabled:opacity-50"
+              >
+                <option value="doctr">In-House (DocTR + TrOCR)</option>
+                <option value="azure">Azure OCR</option>
+              </select>
+            )}
             <button onClick={() => manualRotate(-1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">&#8634; -1&deg;</button>
             <button onClick={() => manualRotate(1)} className="px-2 sm:px-3 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">&#8635; +1&deg;</button>
             <button onClick={preprocessImage} className="px-3 sm:px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800 active:bg-gray-900">Enhance</button>
-            {!trainingMode && (
-              <div className="flex items-center gap-1">
-                <select
-                  value={ocrMethod}
-                  onChange={(e) => setOcrMethod(e.target.value as "azure" | "doctr")}
-                  disabled={ocrRunning}
-                  className="px-2 py-2 rounded-l text-sm border border-gray-300 bg-white text-gray-700 disabled:opacity-50"
-                >
-                  <option value="doctr">In-House (DocTR + TrOCR)</option>
-                  <option value="azure">Azure OCR</option>
-                </select>
-                <button onClick={() => runOCR()} disabled={ocrRunning}
-                  className={`px-4 sm:px-6 py-2 rounded-r text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
-                  {ocrRunning ? "Processing..." : result ? "Re-run" : "Run OCR"}
-                </button>
-              </div>
+            {!trainingMode && result && (
+              <button onClick={() => runOCR()} disabled={ocrRunning}
+                className="px-3 py-2 rounded text-sm font-medium bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50">
+                {ocrRunning ? "Processing..." : "Quick Re-run"}
+              </button>
             )}
           </div>
+          {/* Step-by-step OCR stepper */}
+          {!trainingMode && !ocrRunning && (
+            <div className="mt-3">
+              <OcrStepper
+                fileId={fileId}
+                method={ocrMethod}
+                imageNaturalWidth={imageNaturalWidth}
+                imageNaturalHeight={imageNaturalHeight}
+                onImageRefresh={() => {
+                  const bust = Date.now();
+                  setImageCacheBust(bust);
+                  if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
+                }}
+                onComplete={async () => {
+                  setTrainingMode(false);
+                  setCorrectionCount(0);
+                  await loadResult();
+                }}
+              />
+            </div>
+          )}
           {ocrRunning && (
             <div className="mt-3 space-y-2">
               <div className="flex items-center justify-between text-sm text-gray-500">
@@ -1075,10 +1080,6 @@ export default function EditorPage() {
               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
               </div>
-              <p className="text-xs text-gray-400">{ocrMethod === "doctr"
-                ? (elapsedSeconds < 3 ? "Straightening & enhancing image..." : elapsedSeconds < 8 ? "DocTR: detecting word boxes..." : elapsedSeconds < 35 ? "TrOCR: recognizing words..." : "Finishing up...")
-                : (elapsedSeconds < 3 ? "Straightening & enhancing image..." : elapsedSeconds < 18 ? "Azure: detecting lines..." : elapsedSeconds < 50 ? "Azure: reading handwriting..." : "Finishing up (+ TrOCR if available)...")
-              }</p>
             </div>
           )}
           {trocrRunning && (

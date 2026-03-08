@@ -20,9 +20,12 @@ export async function GET(
 
     if (!file) return new NextResponse("Not found", { status: 404 });
 
+    const wantOriginal = req.nextUrl.searchParams.get("original") === "true";
+    const storagePath = wantOriginal && file.originalStoragePath ? file.originalStoragePath : file.storagePath;
+
     const { data, error } = await supabase.storage
       .from(BUCKET)
-      .download(file.storagePath);
+      .download(storagePath);
 
     if (error || !data) {
       console.error("Supabase storage error:", error, "path:", file.storagePath);
