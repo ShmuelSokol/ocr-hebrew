@@ -197,7 +197,7 @@ export async function POST(
 
   // Send to TrOCR
   const formData = new FormData();
-  formData.append("image", new Blob([cropBuffer], { type: "image/jpeg" }), "word.jpg");
+  formData.append("image", new Blob([new Uint8Array(cropBuffer)], { type: "image/jpeg" }), "word.jpg");
 
   try {
     const res = await fetch(`${TROCR_SERVER}/predict`, {
