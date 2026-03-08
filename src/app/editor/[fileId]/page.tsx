@@ -1076,8 +1076,8 @@ export default function EditorPage() {
                 <div className="h-full bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(95, (elapsedSeconds / 60) * 100)}%` }} />
               </div>
               <p className="text-xs text-gray-400">{ocrMethod === "doctr"
-                ? (elapsedSeconds < 5 ? "DocTR: detecting word boxes..." : elapsedSeconds < 30 ? "TrOCR: recognizing words..." : "Finishing up...")
-                : (elapsedSeconds < 15 ? "Azure: detecting lines..." : elapsedSeconds < 45 ? "Azure: reading handwriting..." : "Finishing up (+ TrOCR if available)...")
+                ? (elapsedSeconds < 3 ? "Straightening & enhancing image..." : elapsedSeconds < 8 ? "DocTR: detecting word boxes..." : elapsedSeconds < 35 ? "TrOCR: recognizing words..." : "Finishing up...")
+                : (elapsedSeconds < 3 ? "Straightening & enhancing image..." : elapsedSeconds < 18 ? "Azure: detecting lines..." : elapsedSeconds < 50 ? "Azure: reading handwriting..." : "Finishing up (+ TrOCR if available)...")
               }</p>
             </div>
           )}
