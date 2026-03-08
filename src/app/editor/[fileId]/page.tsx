@@ -424,6 +424,49 @@ export default function EditorPage() {
     await loadResult();
   }
 
+  const NUDGE_PX = 5;
+
+  async function adjustWordBounds(wordId: string, edge: "left" | "right", direction: "expand" | "shrink") {
+    setResult(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        lines: prev.lines.map(l => ({
+          ...l,
+          words: l.words.map(w => {
+            if (w.id !== wordId || w.xLeft == null || w.xRight == null) return w;
+            let newLeft = w.xLeft;
+            let newRight = w.xRight;
+            if (edge === "left") {
+              newLeft += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
+            } else {
+              newRight += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
+            }
+            // Don't let edges cross or go negative
+            if (newLeft < 0) newLeft = 0;
+            if (newRight - newLeft < 5) return w;
+            return { ...w, xLeft: newLeft, xRight: newRight };
+          }),
+        })),
+      };
+    });
+    // Find current word bounds after local update
+    const word = result?.lines.flatMap(l => l.words).find(w => w.id === wordId);
+    if (!word || word.xLeft == null || word.xRight == null) return;
+    let newLeft = word.xLeft;
+    let newRight = word.xRight;
+    if (edge === "left") newLeft += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
+    else newRight += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
+    if (newLeft < 0) newLeft = 0;
+    if (newRight - newLeft < 5) return;
+    // Save to server
+    fetch(`/api/words/${wordId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ xLeft: newLeft, xRight: newRight }),
+    });
+  }
+
   function startEdit(word: Word) {
     setEditingWord(word.id);
     setEditValue(word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText));
@@ -1031,15 +1074,33 @@ export default function EditorPage() {
               <button onClick={() => saveAndPrev(selectedWord!.id, editValue)} disabled={isFirst}
                 className="hidden sm:block shrink-0 px-2 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 disabled:opacity-30 text-sm">&rarr;</button>
 
-              {/* Crop */}
-              <div className="flex items-center gap-2 sm:gap-3">
+              {/* Crop with bounding box controls */}
+              <div className="flex items-center gap-1 sm:gap-2">
+                {/* Right edge controls (Hebrew RTL — right edge is the "start") */}
+                {selectedWord.xLeft != null && (
+                  <div className="flex flex-col gap-0.5 shrink-0">
+                    <button onClick={() => adjustWordBounds(selectedWord!.id, "right", "expand")}
+                      className="px-1 py-0.5 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Expand right edge">&#9654;</button>
+                    <button onClick={() => adjustWordBounds(selectedWord!.id, "right", "shrink")}
+                      className="px-1 py-0.5 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Shrink right edge">&#9664;</button>
+                  </div>
+                )}
                 <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[150px] sm:max-w-[200px]">
                   {selectedWord.xLeft != null && selectedWord.xRight != null ? (
-                    <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${imageVersion}`} />
+                    <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${selectedWord.xLeft}-${selectedWord.xRight}-${imageVersion}`} />
                   ) : (
                     <LineCropCanvas imgEl={imageRef.current} line={selectedLine} maxHeight={48} key={`eblc-${selectedLine.id}-${imageVersion}`} />
                   )}
                 </div>
+                {/* Left edge controls */}
+                {selectedWord.xRight != null && (
+                  <div className="flex flex-col gap-0.5 shrink-0">
+                    <button onClick={() => adjustWordBounds(selectedWord!.id, "left", "expand")}
+                      className="px-1 py-0.5 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Expand left edge">&#9664;</button>
+                    <button onClick={() => adjustWordBounds(selectedWord!.id, "left", "shrink")}
+                      className="px-1 py-0.5 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Shrink left edge">&#9654;</button>
+                  </div>
+                )}
                 <div className="flex flex-col gap-0.5 shrink-0 min-w-0" dir="rtl">
                   <span className="text-sm font-mono bg-gray-100 px-2 py-0.5 rounded truncate">{selectedWord.rawText}</span>
                   {selectedWord.modelText && selectedWord.modelText !== selectedWord.rawText && (

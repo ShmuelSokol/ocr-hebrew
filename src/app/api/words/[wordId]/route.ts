@@ -12,7 +12,7 @@ export async function PATCH(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = (session.user as { id: string }).id;
 
-  const { correctedText } = await req.json();
+  const { correctedText, xLeft, xRight } = await req.json();
 
   const word = await prisma.oCRWord.findUnique({
     where: { id: params.wordId },
@@ -21,30 +21,53 @@ export async function PATCH(
 
   if (!word) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // Build update data
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const updateData: any = {};
+  if (correctedText !== undefined) updateData.correctedText = correctedText;
+
+  // Bounding box correction
+  if (xLeft !== undefined || xRight !== undefined) {
+    // Save originals on first correction (so we can track what changed)
+    if (word.originalXLeft == null && word.xLeft != null) {
+      updateData.originalXLeft = word.xLeft;
+    }
+    if (word.originalXRight == null && word.xRight != null) {
+      updateData.originalXRight = word.xRight;
+    }
+    if (xLeft !== undefined) updateData.xLeft = xLeft;
+    if (xRight !== undefined) updateData.xRight = xRight;
+  }
+
   // Update the word
   await prisma.oCRWord.update({
     where: { id: params.wordId },
-    data: { correctedText },
+    data: updateData,
   });
 
-  // Update line corrected text
-  const lineWords = await prisma.oCRWord.findMany({
-    where: { lineId: word.lineId },
-    orderBy: { wordIndex: "asc" },
-  });
-  const lineCorrected = lineWords
-    .map((w) => (w.id === params.wordId ? correctedText : w.correctedText || w.rawText))
-    .join(" ");
-  await prisma.oCRLine.update({
-    where: { id: word.lineId },
-    data: { correctedText: lineCorrected },
-  });
+  // Update line corrected text (only if text was changed)
+  if (correctedText !== undefined) {
+    const lineWords = await prisma.oCRWord.findMany({
+      where: { lineId: word.lineId },
+      orderBy: { wordIndex: "asc" },
+    });
+    const lineCorrected = lineWords
+      .map((w) => (w.id === params.wordId ? correctedText : w.correctedText || w.rawText))
+      .join(" ");
+    await prisma.oCRLine.update({
+      where: { id: word.lineId },
+      data: { correctedText: lineCorrected },
+    });
+  }
 
   // Auto-save word crop as training example (background, non-blocking)
-  // This links the correction to the actual handwriting image of this specific word
+  // Use the latest bounds (possibly corrected) for the crop
   const file = word.line.result.file;
-  if (file.profileId && word.xLeft != null && word.xRight != null) {
-    saveWordTraining(userId, file, word.line, word, correctedText).catch(() => {});
+  const finalXLeft = xLeft ?? word.xLeft;
+  const finalXRight = xRight ?? word.xRight;
+  const finalText = correctedText ?? word.correctedText ?? word.rawText;
+  if (file.profileId && finalXLeft != null && finalXRight != null) {
+    saveWordTraining(userId, file, word.line, { ...word, xLeft: finalXLeft, xRight: finalXRight }, finalText).catch(() => {});
   }
 
   return NextResponse.json({ success: true });
