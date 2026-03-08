@@ -406,10 +406,16 @@ export default function EditorPage() {
     }
   }
 
+  async function loadResultKeepScroll() {
+    const scrollY = window.scrollY;
+    await loadResult();
+    requestAnimationFrame(() => window.scrollTo(0, scrollY));
+  }
+
   async function deleteWord(wordId: string) {
     if (!confirm("Delete this word?")) return;
     await fetch(`/api/words/${wordId}`, { method: "DELETE" });
-    await loadResult();
+    await loadResultKeepScroll();
   }
 
   async function addWord(lineId: string, afterWordIndex: number, text: string) {
@@ -421,7 +427,7 @@ export default function EditorPage() {
     });
     setAddingWordLineId(null);
     setAddWordValue("");
-    await loadResult();
+    await loadResultKeepScroll();
   }
 
   const NUDGE_PX = 5;
@@ -474,14 +480,21 @@ export default function EditorPage() {
     });
     if (res.ok) {
       setEditingWord(null);
-      await loadResult();
+      await loadResultKeepScroll();
     }
   }
 
   function startEdit(word: Word) {
     setEditingWord(word.id);
     setEditValue(word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText));
-    setTimeout(() => editInputRef.current?.focus(), 50);
+    setTimeout(() => {
+      editInputRef.current?.focus();
+      // Scroll the word card into view so user can see it above the editing bar
+      const wordEl = document.getElementById(`word-${word.id}`);
+      if (wordEl) {
+        wordEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 50);
   }
 
   // ─── Training / Corrections Panels ─────────────────────
@@ -582,7 +595,7 @@ export default function EditorPage() {
   async function reviewDelete() {
     if (!reviewWord) return;
     await fetch(`/api/words/${reviewWord.id}`, { method: "DELETE" });
-    await loadResult();
+    await loadResultKeepScroll();
     if (result) {
       const line = result.lines[reviewLineIdx];
       if (line && reviewWordIdx >= line.words.length - 1 && reviewWordIdx > 0) setReviewWordIdx(reviewWordIdx - 1);
@@ -641,7 +654,7 @@ export default function EditorPage() {
             <div key={line.id} className="border-b border-gray-200">
               {/* Line image crop */}
               <div className="px-2 pt-2">
-                <LineCropCanvas imgEl={imgEl} line={line} key={`lc-${line.id}-${imageVersion}`} />
+                <LineCropCanvas imgEl={imgEl} line={line} maxHeight={120} key={`lc-${line.id}-${imageVersion}`} />
               </div>
 
               {/* Word text row — RTL */}
@@ -667,7 +680,7 @@ export default function EditorPage() {
                   const displayText = word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText);
 
                   return (
-                    <div key={word.id} className="inline-flex flex-col items-center">
+                    <div key={word.id} id={`word-${word.id}`} className="inline-flex flex-col items-center">
                       <div className="relative">
                         <button
                           onClick={() => startEdit(word)}
