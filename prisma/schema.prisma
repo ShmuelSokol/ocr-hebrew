@@ -80,8 +80,12 @@ model OCRWord {
   confidence  Float?
   xLeft       Int?
   xRight      Int?
+  yTop        Int?
+  yBottom     Int?
   originalXLeft  Int?
   originalXRight Int?
+  originalYTop   Int?
+  originalYBottom Int?
 }
 
 model TokenUsage {

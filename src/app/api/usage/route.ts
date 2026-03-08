@@ -20,7 +20,7 @@ export async function GET() {
 
   // Bbox correction stats
   const bboxCorrected = await prisma.oCRWord.count({
-    where: { originalXLeft: { not: null } },
+    where: { OR: [{ originalXLeft: { not: null } }, { originalYTop: { not: null } }] },
   });
   const trainingExampleCount = await prisma.trainingExample.count();
 

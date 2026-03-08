@@ -12,7 +12,7 @@ export async function PATCH(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = (session.user as { id: string }).id;
 
-  const { correctedText, xLeft, xRight } = await req.json();
+  const { correctedText, xLeft, xRight, yTop, yBottom } = await req.json();
 
   const word = await prisma.oCRWord.findUnique({
     where: { id: params.wordId },
@@ -26,9 +26,8 @@ export async function PATCH(
   const updateData: any = {};
   if (correctedText !== undefined) updateData.correctedText = correctedText;
 
-  // Bounding box correction
+  // Bounding box correction (horizontal)
   if (xLeft !== undefined || xRight !== undefined) {
-    // Save originals on first correction (so we can track what changed)
     if (word.originalXLeft == null && word.xLeft != null) {
       updateData.originalXLeft = word.xLeft;
     }
@@ -37,6 +36,18 @@ export async function PATCH(
     }
     if (xLeft !== undefined) updateData.xLeft = xLeft;
     if (xRight !== undefined) updateData.xRight = xRight;
+  }
+
+  // Bounding box correction (vertical)
+  if (yTop !== undefined || yBottom !== undefined) {
+    if (word.originalYTop == null) {
+      updateData.originalYTop = word.yTop ?? word.line.yTop;
+    }
+    if (word.originalYBottom == null) {
+      updateData.originalYBottom = word.yBottom ?? word.line.yBottom;
+    }
+    if (yTop !== undefined) updateData.yTop = yTop;
+    if (yBottom !== undefined) updateData.yBottom = yBottom;
   }
 
   // Update the word
@@ -65,9 +76,11 @@ export async function PATCH(
   const file = word.line.result.file;
   const finalXLeft = xLeft ?? word.xLeft;
   const finalXRight = xRight ?? word.xRight;
+  const finalYTop = yTop ?? word.yTop;
+  const finalYBottom = yBottom ?? word.yBottom;
   const finalText = correctedText ?? word.correctedText ?? word.rawText;
   if (file.profileId && finalXLeft != null && finalXRight != null) {
-    saveWordTraining(userId, file, word.line, { ...word, xLeft: finalXLeft, xRight: finalXRight }, finalText).catch(() => {});
+    saveWordTraining(userId, file, word.line, { ...word, xLeft: finalXLeft, xRight: finalXRight, yTop: finalYTop, yBottom: finalYBottom }, finalText).catch(() => {});
   }
 
   return NextResponse.json({ success: true });
@@ -78,7 +91,7 @@ async function saveWordTraining(
   userId: string,
   file: { id: string; storagePath: string; profileId: string | null },
   line: { id: string; lineIndex: number; yTop: number; yBottom: number },
-  word: { id: string; wordIndex: number; xLeft: number | null; xRight: number | null },
+  word: { id: string; wordIndex: number; xLeft: number | null; xRight: number | null; yTop?: number | null; yBottom?: number | null },
   text: string,
 ) {
   if (!file.profileId || !text.trim() || word.xLeft == null || word.xRight == null) return;
@@ -108,12 +121,14 @@ async function saveWordTraining(
   const imgWidth = metadata.width || 1;
 
   // Pad around the word for context
+  const cropYTop = word.yTop ?? line.yTop;
+  const cropYBottom = word.yBottom ?? line.yBottom;
   const padX = Math.floor((word.xRight - word.xLeft) * 0.1);
-  const padY = Math.floor((line.yBottom - line.yTop) * 0.15);
+  const padY = Math.floor((cropYBottom - cropYTop) * 0.15);
   const left = Math.max(0, word.xLeft - padX);
-  const top = Math.max(0, line.yTop - padY);
+  const top = Math.max(0, cropYTop - padY);
   const right = Math.min(imgWidth, word.xRight + padX);
-  const bottom = Math.min(imgHeight, line.yBottom + padY);
+  const bottom = Math.min(imgHeight, cropYBottom + padY);
   const cropW = right - left;
   const cropH = bottom - top;
   if (cropW < 5 || cropH < 5) return;

@@ -11,6 +11,8 @@ interface Word {
   modelText: string | null;
   xLeft: number | null;
   xRight: number | null;
+  yTop: number | null;
+  yBottom: number | null;
 }
 
 interface Line {
@@ -48,8 +50,10 @@ function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
     if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
     if (word.xLeft == null || word.xRight == null) return;
 
+    const cropTop = word.yTop ?? line.yTop;
+    const cropBottom = word.yBottom ?? line.yBottom;
     const srcW = word.xRight - word.xLeft;
-    const srcH = line.yBottom - line.yTop;
+    const srcH = cropBottom - cropTop;
     if (srcW <= 0 || srcH <= 0) return;
 
     const scale = Math.min(2, maxHeight / srcH);
@@ -58,8 +62,8 @@ function WordCropCanvas({ imgEl, word, line, maxHeight = 50 }: {
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(imgEl, word.xLeft, line.yTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
-  }, [imgEl, word.xLeft, word.xRight, line.yTop, line.yBottom, maxHeight]);
+    ctx.drawImage(imgEl, word.xLeft, cropTop, srcW, srcH, 0, 0, canvas.width, canvas.height);
+  }, [imgEl, word.xLeft, word.xRight, word.yTop, word.yBottom, line.yTop, line.yBottom, maxHeight]);
 
   if (word.xLeft == null || word.xRight == null) return null;
   return <canvas ref={canvasRef} className="block" />;
@@ -432,7 +436,9 @@ export default function EditorPage() {
 
   const NUDGE_PX = 5;
 
-  async function adjustWordBounds(wordId: string, edge: "left" | "right", direction: "expand" | "shrink") {
+  async function adjustWordBounds(wordId: string, edge: "left" | "right" | "top" | "bottom", direction: "expand" | "shrink") {
+    // Find the word's line for default y values
+    const line = result?.lines.find(l => l.words.some(w => w.id === wordId));
     setResult(prev => {
       if (!prev) return prev;
       return {
@@ -443,15 +449,22 @@ export default function EditorPage() {
             if (w.id !== wordId || w.xLeft == null || w.xRight == null) return w;
             let newLeft = w.xLeft;
             let newRight = w.xRight;
+            let newTop = w.yTop ?? l.yTop;
+            let newBottom = w.yBottom ?? l.yBottom;
             if (edge === "left") {
               newLeft += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
-            } else {
+            } else if (edge === "right") {
               newRight += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
+            } else if (edge === "top") {
+              newTop += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
+            } else {
+              newBottom += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
             }
-            // Don't let edges cross or go negative
             if (newLeft < 0) newLeft = 0;
+            if (newTop < 0) newTop = 0;
             if (newRight - newLeft < 5) return w;
-            return { ...w, xLeft: newLeft, xRight: newRight };
+            if (newBottom - newTop < 5) return w;
+            return { ...w, xLeft: newLeft, xRight: newRight, yTop: newTop, yBottom: newBottom };
           }),
         })),
       };
@@ -461,15 +474,20 @@ export default function EditorPage() {
     if (!word || word.xLeft == null || word.xRight == null) return;
     let newLeft = word.xLeft;
     let newRight = word.xRight;
+    let newTop = word.yTop ?? line?.yTop ?? 0;
+    let newBottom = word.yBottom ?? line?.yBottom ?? 0;
     if (edge === "left") newLeft += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
-    else newRight += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
+    else if (edge === "right") newRight += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
+    else if (edge === "top") newTop += direction === "expand" ? -NUDGE_PX : NUDGE_PX;
+    else newBottom += direction === "expand" ? NUDGE_PX : -NUDGE_PX;
     if (newLeft < 0) newLeft = 0;
-    if (newRight - newLeft < 5) return;
+    if (newTop < 0) newTop = 0;
+    if (newRight - newLeft < 5 || newBottom - newTop < 5) return;
     // Save to server
     fetch(`/api/words/${wordId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xLeft: newLeft, xRight: newRight }),
+      body: JSON.stringify({ xLeft: newLeft, xRight: newRight, yTop: newTop, yBottom: newBottom }),
     });
   }
 
@@ -1109,11 +1127,31 @@ export default function EditorPage() {
                       className="px-1 py-0.5 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Shrink right edge">&#9664;</button>
                   </div>
                 )}
-                <div className="shrink-0 border rounded overflow-hidden bg-white max-w-[150px] sm:max-w-[200px]">
-                  {selectedWord.xLeft != null && selectedWord.xRight != null ? (
-                    <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${selectedWord.xLeft}-${selectedWord.xRight}-${imageVersion}`} />
-                  ) : (
-                    <LineCropCanvas imgEl={imageRef.current} line={selectedLine} maxHeight={48} key={`eblc-${selectedLine.id}-${imageVersion}`} />
+                <div className="flex flex-col items-center gap-0.5 shrink-0">
+                  {/* Top edge controls */}
+                  {selectedWord.xLeft != null && (
+                    <div className="flex gap-0.5">
+                      <button onClick={() => adjustWordBounds(selectedWord!.id, "top", "expand")}
+                        className="px-1.5 py-0 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Expand top edge">&#9650;</button>
+                      <button onClick={() => adjustWordBounds(selectedWord!.id, "top", "shrink")}
+                        className="px-1.5 py-0 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Shrink top edge">&#9660;</button>
+                    </div>
+                  )}
+                  <div className="border rounded overflow-hidden bg-white max-w-[150px] sm:max-w-[200px]">
+                    {selectedWord.xLeft != null && selectedWord.xRight != null ? (
+                      <WordCropCanvas imgEl={imageRef.current} word={selectedWord} line={selectedLine} maxHeight={48} key={`ewc-${selectedWord.id}-${selectedWord.xLeft}-${selectedWord.xRight}-${selectedWord.yTop}-${selectedWord.yBottom}-${imageVersion}`} />
+                    ) : (
+                      <LineCropCanvas imgEl={imageRef.current} line={selectedLine} maxHeight={48} key={`eblc-${selectedLine.id}-${imageVersion}`} />
+                    )}
+                  </div>
+                  {/* Bottom edge controls */}
+                  {selectedWord.xLeft != null && (
+                    <div className="flex gap-0.5">
+                      <button onClick={() => adjustWordBounds(selectedWord!.id, "bottom", "expand")}
+                        className="px-1.5 py-0 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Expand bottom edge">&#9660;</button>
+                      <button onClick={() => adjustWordBounds(selectedWord!.id, "bottom", "shrink")}
+                        className="px-1.5 py-0 text-[10px] rounded bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600" title="Shrink bottom edge">&#9650;</button>
+                    </div>
                   )}
                 </div>
                 {/* Left edge controls */}
