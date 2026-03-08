@@ -491,54 +491,82 @@ async function ocrWithDocTR(
     return { lines: [], rawText: "" };
   }
 
-  // Step 2: Crop each word and send to TrOCR /predict for text recognition
+  // Step 2: Crop all words in parallel, then batch-predict via /predict_batch
   const sharp = (await import("sharp")).default;
-  const lines: OCRLineResult[] = [];
 
-  for (const detectLine of detection.lines) {
-    const words: OCRWordResult[] = [];
+  // Build a flat list of word crops with their line/word indices
+  const cropJobs: { lineIdx: number; wordBox: { xLeft: number; xRight: number; yTop: number; yBottom: number } }[] = [];
+  const cropBuffers: Buffer[] = [];
 
-    for (const wordBox of detectLine.words) {
+  for (let li = 0; li < detection.lines.length; li++) {
+    for (const wordBox of detection.lines[li].words) {
       const pad = 3;
       const left = Math.max(0, wordBox.xLeft - pad);
       const top = Math.max(0, wordBox.yTop - pad);
       const width = Math.min(wordBox.xRight + pad, 10000) - left;
       const height = Math.min(wordBox.yBottom + pad, 10000) - top;
-
       if (width < 5 || height < 5) continue;
+      cropJobs.push({ lineIdx: li, wordBox });
+    }
+  }
 
-      let text = "";
-      try {
-        const cropBuffer = await sharp(imageBuffer)
-          .extract({ left, top, width, height })
-          .jpeg({ quality: 90 })
-          .toBuffer();
+  // Crop all words in parallel
+  const cropPromises = cropJobs.map(({ wordBox }) => {
+    const pad = 3;
+    const left = Math.max(0, wordBox.xLeft - pad);
+    const top = Math.max(0, wordBox.yTop - pad);
+    const width = Math.min(wordBox.xRight + pad, 10000) - left;
+    const height = Math.min(wordBox.yBottom + pad, 10000) - top;
+    return sharp(imageBuffer).extract({ left, top, width, height }).jpeg({ quality: 90 }).toBuffer();
+  });
+  const allCrops = await Promise.all(cropPromises);
 
-        const wordForm = new FormData();
-        wordForm.append("image", new Blob([new Uint8Array(cropBuffer)], { type: "image/jpeg" }), "word.jpg");
+  // Send all crops in one batch request
+  const BATCH_SIZE = 50;
+  const allTexts: string[] = new Array(allCrops.length).fill("");
 
-        const predRes = await fetch(`${TROCR_SERVER}/predict`, {
-          method: "POST",
-          body: wordForm,
-          signal: AbortSignal.timeout(10000),
-        });
-
-        if (predRes.ok) {
-          const pred = await predRes.json();
-          text = pred.text || "";
+  for (let i = 0; i < allCrops.length; i += BATCH_SIZE) {
+    const batch = allCrops.slice(i, i + BATCH_SIZE);
+    const batchForm = new FormData();
+    for (let j = 0; j < batch.length; j++) {
+      batchForm.append("images", new Blob([new Uint8Array(batch[j])], { type: "image/jpeg" }), `word_${i + j}.jpg`);
+    }
+    try {
+      const batchRes = await fetch(`${TROCR_SERVER}/predict_batch`, {
+        method: "POST",
+        body: batchForm,
+        signal: AbortSignal.timeout(120000),
+      });
+      if (batchRes.ok) {
+        const batchData = await batchRes.json();
+        for (let j = 0; j < batchData.results.length; j++) {
+          allTexts[i + j] = batchData.results[j].text || "";
         }
-      } catch {
-        // Skip individual word failures
       }
+    } catch {
+      // Fall back to empty text for this batch
+    }
+  }
 
+  // Assemble results by line
+  const lines: OCRLineResult[] = [];
+  let cropIdx = 0;
+  for (let li = 0; li < detection.lines.length; li++) {
+    const detectLine = detection.lines[li];
+    const words: OCRWordResult[] = [];
+    for (const wordBox of detectLine.words) {
+      const pad = 3;
+      const width = Math.min(wordBox.xRight + pad, 10000) - Math.max(0, wordBox.xLeft - pad);
+      const height = Math.min(wordBox.yBottom + pad, 10000) - Math.max(0, wordBox.yTop - pad);
+      if (width < 5 || height < 5) continue;
       words.push({
-        text,
+        text: allTexts[cropIdx],
         xLeft: wordBox.xLeft,
         xRight: wordBox.xRight,
         confidence: undefined,
       });
+      cropIdx++;
     }
-
     lines.push({
       lineIndex: detectLine.lineIndex,
       yTop: detectLine.yTop,
