@@ -85,6 +85,8 @@ Located in `../training/` (sibling to `web/` directory).
 | `train.py` | TrOCR-small fine-tuning (MPS, augmentation, early stopping, checkpoints) |
 | `inference.py` | Run inference on single images, directories, or benchmark |
 | `serve.py` | FastAPI inference server — TrOCR `/predict` + DocTR `/detect` endpoints |
+| `download_bbox_data.py` | Download page images + word boxes for DocTR fine-tuning |
+| `train_doctr.py` | Fine-tune DocTR db_resnet50 word detection on corrected boxes |
 | `benchmark_boxes.py` | Bounding box detection benchmark (DocTR, CC, PP methods vs Azure) |
 | `benchmark_multi.py` | Multi-page benchmark across database pages |
 
@@ -99,7 +101,7 @@ source venv/bin/activate
 pip install fastapi uvicorn python-multipart python-doctr[torch] opencv-python-headless
 ```
 
-### Training workflow:
+### TrOCR training workflow:
 ```bash
 cd ocr-hebrew/training
 source venv/bin/activate
@@ -109,6 +111,20 @@ python train.py          # Auto-resumes from previous best checkpoint
 python train.py --fresh  # Start from base model (ignore previous)
 python inference.py --model output/checkpoints/best --image word.jpg
 ```
+
+### DocTR detection fine-tuning workflow:
+```bash
+cd ocr-hebrew/training
+source venv/bin/activate
+python download_bbox_data.py   # Downloads page images + word boxes from DB/Supabase
+python train_doctr.py          # Fine-tune db_resnet50 (auto-resumes from previous best)
+python train_doctr.py --fresh  # Start from pretrained (ignore previous)
+```
+- Data: `bbox_data/images/` (full page images) + `bbox_data/labels.json` (DocTR format)
+- Output: `bbox_output/checkpoints/best/model.pt`
+- `serve.py` auto-loads fine-tuned model from `bbox_output/checkpoints/best/` if it exists
+- Training uses corrected bounding boxes from editor (originalXLeft/originalYTop tracking)
+- Note: DocTR v1.0.1 has a bug in `compute_loss` (`l1_loss` undefined) — `train_doctr.py` monkey-patches it
 
 ### Serving the model (TrOCR + DocTR):
 ```bash
