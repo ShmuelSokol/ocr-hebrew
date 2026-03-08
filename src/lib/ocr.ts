@@ -496,7 +496,6 @@ async function ocrWithDocTR(
 
   // Build a flat list of word crops with their line/word indices
   const cropJobs: { lineIdx: number; wordBox: { xLeft: number; xRight: number; yTop: number; yBottom: number } }[] = [];
-  const cropBuffers: Buffer[] = [];
 
   for (let li = 0; li < detection.lines.length; li++) {
     for (const wordBox of detection.lines[li].words) {
