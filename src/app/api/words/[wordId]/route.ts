@@ -155,6 +155,73 @@ async function saveWordTraining(
   });
 }
 
+export async function POST(
+  req: NextRequest,
+  { params }: { params: { wordId: string } }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const word = await prisma.oCRWord.findUnique({
+    where: { id: params.wordId },
+    include: { line: { include: { result: { include: { file: true } } } } },
+  });
+  if (!word || word.xLeft == null || word.xRight == null)
+    return NextResponse.json({ error: "Not found or no bounds" }, { status: 404 });
+
+  const TROCR_SERVER = process.env["TROCR_SERVER_URL"] || "https://trocr.ksavyad.com";
+
+  // Download image and crop the word
+  const sharp = (await import("sharp")).default;
+  const { data: blob, error } = await supabase.storage.from(BUCKET).download(word.line.result.file.storagePath);
+  if (error || !blob) return NextResponse.json({ error: "Image download failed" }, { status: 500 });
+
+  const imageBuffer = Buffer.from(await blob.arrayBuffer());
+  const metadata = await sharp(imageBuffer).metadata();
+  const imgH = metadata.height || 1;
+  const imgW = metadata.width || 1;
+
+  const yTop = word.yTop ?? word.line.yTop;
+  const yBottom = word.yBottom ?? word.line.yBottom;
+  const padX = Math.floor((word.xRight - word.xLeft) * 0.1);
+  const padY = Math.floor((yBottom - yTop) * 0.15);
+  const left = Math.max(0, word.xLeft - padX);
+  const top = Math.max(0, yTop - padY);
+  const right = Math.min(imgW, word.xRight + padX);
+  const bottom = Math.min(imgH, yBottom + padY);
+
+  const cropBuffer = await sharp(imageBuffer)
+    .extract({ left, top, width: right - left, height: bottom - top })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
+  // Send to TrOCR
+  const formData = new FormData();
+  formData.append("image", new Blob([cropBuffer], { type: "image/jpeg" }), "word.jpg");
+
+  try {
+    const res = await fetch(`${TROCR_SERVER}/predict`, {
+      method: "POST",
+      body: formData,
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) return NextResponse.json({ error: "TrOCR failed" }, { status: 502 });
+
+    const data = await res.json();
+    const text = data.text || "";
+
+    // Update word with new TrOCR text
+    await prisma.oCRWord.update({
+      where: { id: params.wordId },
+      data: { modelText: text, rawText: text, correctedText: null },
+    });
+
+    return NextResponse.json({ success: true, text });
+  } catch {
+    return NextResponse.json({ error: "TrOCR server unavailable" }, { status: 502 });
+  }
+}
+
 export async function DELETE(
   req: NextRequest,
   { params }: { params: { wordId: string } }

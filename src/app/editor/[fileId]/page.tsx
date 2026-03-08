@@ -107,7 +107,7 @@ export default function EditorPage() {
   const [result, setResult] = useState<OCRResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
-  const [ocrMethod, setOcrMethod] = useState<"azure" | "doctr">("azure");
+  const [ocrMethod, setOcrMethod] = useState<"azure" | "doctr">("doctr");
   const [editingWord, setEditingWord] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [filename, setFilename] = useState("");
@@ -439,6 +439,22 @@ export default function EditorPage() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => window.scrollTo(0, scrollY));
     });
+  }
+
+  const [reocring, setReocring] = useState(false);
+
+  async function reOcrWord(wordId: string) {
+    setReocring(true);
+    try {
+      const res = await fetch(`/api/words/${wordId}`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setEditValue(data.text || "");
+        await loadResultKeepScroll();
+      }
+    } finally {
+      setReocring(false);
+    }
   }
 
   async function deleteWord(wordId: string) {
@@ -1037,8 +1053,8 @@ export default function EditorPage() {
                   disabled={ocrRunning}
                   className="px-2 py-2 rounded-l text-sm border border-gray-300 bg-white text-gray-700 disabled:opacity-50"
                 >
-                  <option value="azure">Azure OCR</option>
                   <option value="doctr">In-House (DocTR + TrOCR)</option>
+                  <option value="azure">Azure OCR</option>
                 </select>
                 <button onClick={() => runOCR()} disabled={ocrRunning}
                   className={`px-4 sm:px-6 py-2 rounded-r text-sm font-medium text-white disabled:opacity-50 ${result ? "bg-amber-500 hover:bg-amber-600 active:bg-amber-700" : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"}`}>
@@ -1254,6 +1270,9 @@ export default function EditorPage() {
                     )}
                   </div>
                 )}
+                <button onClick={() => reOcrWord(selectedWord!.id)} disabled={reocring}
+                  className="bg-indigo-100 text-indigo-700 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-indigo-200 disabled:opacity-50"
+                  title="Re-run TrOCR on this word">{reocring ? "..." : "Re-OCR"}</button>
                 <button onClick={() => deleteWord(selectedWord!.id)}
                   className="bg-red-100 text-red-600 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-red-200">Del</button>
               </div>
