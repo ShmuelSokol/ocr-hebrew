@@ -516,19 +516,26 @@ export default function EditorPage() {
     });
   }
 
-  async function splitWord(wordId: string) {
+  const [splitMenuOpen, setSplitMenuOpen] = useState(false);
+  const [splitting, setSplitting] = useState(false);
+
+  async function splitWord(wordId: string, parts: number) {
+    setSplitting(true);
+    setSplitMenuOpen(false);
     const res = await fetch(`/api/words/${wordId}/split`, { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ parts }),
     });
     if (res.ok) {
       setEditingWord(null);
       await loadResultKeepScroll();
     }
+    setSplitting(false);
   }
 
   function startEdit(word: Word) {
     setEditingWord(word.id);
+    setSplitMenuOpen(false);
     setEditValue(word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText));
     setTimeout(() => {
       editInputRef.current?.focus();
@@ -1230,8 +1237,22 @@ export default function EditorPage() {
                 <button onClick={() => setEditingWord(null)}
                   className="flex-1 sm:flex-none bg-gray-200 text-gray-700 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-gray-300">Done</button>
                 {selectedWord!.xLeft != null && selectedWord!.xRight != null && (
-                  <button onClick={() => splitWord(selectedWord!.id)}
-                    className="bg-amber-100 text-amber-700 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-amber-200" title="Split word into two">Split</button>
+                  <div className="relative">
+                    <button onClick={() => setSplitMenuOpen(!splitMenuOpen)} disabled={splitting}
+                      className="bg-amber-100 text-amber-700 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-amber-200 disabled:opacity-50" title="Split word">
+                      {splitting ? "..." : "Split"}
+                    </button>
+                    {splitMenuOpen && (
+                      <div className="absolute bottom-full mb-1 left-0 bg-white border border-gray-300 rounded-lg shadow-lg py-1 z-50 min-w-[90px]">
+                        {[2, 3, 4, 5].map(n => (
+                          <button key={n} onClick={() => splitWord(selectedWord!.id, n)}
+                            className="block w-full text-left px-3 py-1.5 text-sm hover:bg-amber-50 text-gray-700">
+                            Split → {n}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
                 <button onClick={() => deleteWord(selectedWord!.id)}
                   className="bg-red-100 text-red-600 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-red-200">Del</button>
