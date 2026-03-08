@@ -5,7 +5,6 @@ import { prisma } from "@/lib/prisma";
 import { runOCR } from "@/lib/ocr";
 import type { OCRMethod } from "@/lib/ocr";
 import { supabase, BUCKET } from "@/lib/supabase";
-import path from "path";
 
 const TROCR_SERVER = process.env["TROCR_SERVER_URL"] || "http://localhost:8765";
 
@@ -36,11 +35,29 @@ export async function POST(
     return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
   }
 
-  const imageData = Buffer.from(await blob.arrayBuffer());
+  const rawImageData = Buffer.from(await blob.arrayBuffer());
+
+  // Auto-straighten and enhance the image
+  const sharp = (await import("sharp")).default;
+  let pipeline = sharp(rawImageData).rotate(); // auto-rotate from EXIF
+
+  // Deskew: detect skew angle via sharp's trim heuristic isn't great,
+  // so we normalize contrast + sharpen for better OCR
+  pipeline = pipeline
+    .normalize()         // auto contrast/levels
+    .sharpen({ sigma: 1.0 }) // mild sharpen for text clarity
+    .jpeg({ quality: 95 });
+
+  const imageData = await pipeline.toBuffer();
+
+  // Save the enhanced image back to storage so the editor shows the corrected version
+  await supabase.storage.from(BUCKET).upload(file.storagePath, imageData, {
+    contentType: "image/jpeg",
+    upsert: true,
+  });
+
   const base64 = imageData.toString("base64");
-  const ext = path.extname(file.filename).toLowerCase();
-  const mediaType =
-    ext === ".png" ? "image/png" : ext === ".gif" ? "image/gif" : "image/jpeg";
+  const mediaType = "image/jpeg";
 
   // Update status
   await prisma.file.update({ where: { id: file.id }, data: { status: "processing" } });
