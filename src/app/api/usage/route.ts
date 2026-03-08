@@ -18,6 +18,12 @@ export async function GET() {
   const totalOutput = records.reduce((sum, r) => sum + r.outputTokens, 0);
   const totalCostCents = records.reduce((sum, r) => sum + r.costCents, 0);
 
+  // Bbox correction stats
+  const bboxCorrected = await prisma.oCRWord.count({
+    where: { originalXLeft: { not: null } },
+  });
+  const trainingExampleCount = await prisma.trainingExample.count();
+
   return NextResponse.json({
     totalInput,
     totalOutput,
@@ -25,6 +31,8 @@ export async function GET() {
     totalCostCents,
     totalCostDollars: (totalCostCents / 100).toFixed(2),
     requestCount: records.length,
+    bboxCorrections: bboxCorrected,
+    trainingExamples: trainingExampleCount,
     recent: records.slice(0, 10).map((r) => ({
       model: r.model,
       inputTokens: r.inputTokens,

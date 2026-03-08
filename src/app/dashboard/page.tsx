@@ -31,6 +31,8 @@ export default function Dashboard() {
     totalTokens: number;
     totalCostDollars: string;
     requestCount: number;
+    bboxCorrections?: number;
+    trainingExamples?: number;
   } | null>(null);
   const [showCorrections, setShowCorrections] = useState<string | null>(null);
   const [corrections, setCorrections] = useState<{
@@ -144,24 +146,36 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Token Usage */}
-      {usage && usage.requestCount > 0 && (
+      {/* Token Usage & Training Stats */}
+      {usage && (usage.requestCount > 0 || (usage.trainingExamples ?? 0) > 0) && (
         <div className="bg-white rounded-lg shadow p-4 mb-6">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">API Usage</h2>
-            <div className="flex gap-6 text-sm">
-              <div>
-                <span className="text-gray-400">Requests: </span>
-                <span className="font-medium">{usage.requestCount}</span>
-              </div>
-              <div>
-                <span className="text-gray-400">Tokens: </span>
-                <span className="font-medium">{usage.totalTokens.toLocaleString()}</span>
-              </div>
-              <div>
-                <span className="text-gray-400">Cost: </span>
-                <span className="font-medium text-green-700">${usage.totalCostDollars}</span>
-              </div>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="font-semibold">Stats</h2>
+            <div className="flex gap-4 sm:gap-6 text-sm flex-wrap">
+              {usage.requestCount > 0 && (
+                <>
+                  <div>
+                    <span className="text-gray-400">OCR Runs: </span>
+                    <span className="font-medium">{usage.requestCount}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Cost: </span>
+                    <span className="font-medium text-green-700">${usage.totalCostDollars}</span>
+                  </div>
+                </>
+              )}
+              {(usage.trainingExamples ?? 0) > 0 && (
+                <div>
+                  <span className="text-gray-400">Training Words: </span>
+                  <span className="font-medium">{usage.trainingExamples}</span>
+                </div>
+              )}
+              {(usage.bboxCorrections ?? 0) > 0 && (
+                <div>
+                  <span className="text-gray-400">BBox Fixes: </span>
+                  <span className="font-medium text-amber-600">{usage.bboxCorrections}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
