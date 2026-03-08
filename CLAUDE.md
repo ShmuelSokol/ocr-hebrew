@@ -129,9 +129,20 @@ python serve.py          # Starts on port 8765
 
 ## Deployment
 
+**Pre-deploy checks** — `npx tsc --noEmit` is NOT sufficient. Next.js build runs ESLint with `@typescript-eslint/no-unused-vars` which catches things tsc doesn't. Always run:
+```bash
+npx next lint   # Catches unused vars, etc. that tsc misses
+```
+
 Deploy via Railway CLI:
 ```bash
 railway up --detach
+```
+
+After deploying, verify with:
+```bash
+railway deployment list   # Check latest deploy status (SUCCESS/FAILED)
+railway logs --build DEPLOY_ID  # Check build logs if failed
 ```
 
 Or use the `/deploy` skill which commits, pushes to GitHub, and deploys.
