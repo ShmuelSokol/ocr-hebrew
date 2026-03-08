@@ -467,6 +467,17 @@ export default function EditorPage() {
     });
   }
 
+  async function splitWord(wordId: string) {
+    const res = await fetch(`/api/words/${wordId}/split`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (res.ok) {
+      setEditingWord(null);
+      await loadResult();
+    }
+  }
+
   function startEdit(word: Word) {
     setEditingWord(word.id);
     setEditValue(word.correctedText || (textSource === "trocr" && word.modelText ? word.modelText : word.rawText));
@@ -1142,6 +1153,10 @@ export default function EditorPage() {
                   className="flex-1 sm:flex-none bg-green-500 text-white px-3 py-3 sm:py-2 rounded-lg font-medium hover:bg-green-600 active:bg-green-700 text-base sm:text-sm">Next</button>
                 <button onClick={() => setEditingWord(null)}
                   className="flex-1 sm:flex-none bg-gray-200 text-gray-700 px-3 py-3 sm:py-2 rounded-lg text-base sm:text-sm hover:bg-gray-300">Done</button>
+                {selectedWord!.xLeft != null && selectedWord!.xRight != null && (
+                  <button onClick={() => splitWord(selectedWord!.id)}
+                    className="bg-amber-100 text-amber-700 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-amber-200" title="Split word into two">Split</button>
+                )}
                 <button onClick={() => deleteWord(selectedWord!.id)}
                   className="bg-red-100 text-red-600 px-2 py-3 sm:py-2 rounded-lg text-sm hover:bg-red-200">Del</button>
               </div>
