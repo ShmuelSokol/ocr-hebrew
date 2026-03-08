@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { runOCR } from "@/lib/ocr";
+import { runOCR, detectSkew } from "@/lib/ocr";
 import type { OCRMethod } from "@/lib/ocr";
 import { supabase, BUCKET } from "@/lib/supabase";
 
@@ -48,24 +48,15 @@ export async function POST(
     .jpeg({ quality: 95 })
     .toBuffer();
 
-  // Step 2: Deskew via TrOCR server (OpenCV-based skew detection)
-  try {
-    const deskewForm = new FormData();
-    deskewForm.append("image", new Blob([new Uint8Array(imageData)], { type: "image/jpeg" }), "page.jpg");
-    const deskewRes = await fetch(`${TROCR_SERVER}/straighten`, {
-      method: "POST",
-      body: deskewForm,
-      signal: AbortSignal.timeout(30000),
-    });
-    if (deskewRes.ok && deskewRes.headers.get("content-type")?.includes("image")) {
-      const angle = deskewRes.headers.get("X-Skew-Angle");
-      if (angle && angle !== "0") {
-        imageData = Buffer.from(await deskewRes.arrayBuffer());
-        console.log(`[OCR] Deskewed image by ${angle}°`);
-      }
-    }
-  } catch {
-    // Deskew server unavailable — continue with original
+  // Step 2: Deskew using JS-based skew detection (same as Straighten button)
+  const skewAngle = await detectSkew(imageData);
+  if (Math.abs(skewAngle) >= 0.1) {
+    const correctionAngle = -skewAngle;
+    imageData = await sharp(imageData)
+      .rotate(correctionAngle, { background: "#ffffff" })
+      .jpeg({ quality: 95 })
+      .toBuffer();
+    console.log(`[OCR] Deskewed image by ${correctionAngle}° (detected skew: ${skewAngle}°)`);
   }
 
   // Save the enhanced image back to storage so the editor shows the corrected version
