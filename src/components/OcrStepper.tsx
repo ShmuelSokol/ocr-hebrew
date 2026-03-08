@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 
 interface DetectedWord {
   xLeft: number;
@@ -18,6 +18,7 @@ interface DetectedLine {
 }
 
 type OcrStep = "idle" | "straightening" | "straightened" | "detecting" | "detected" | "running" | "done";
+type EditMode = "none" | "addMissing" | "splitWords";
 
 const STEPS: { key: OcrStep; label: string }[] = [
   { key: "straightened", label: "Straighten" },
@@ -58,6 +59,19 @@ export default function OcrStepper({
   const [elapsed, setElapsed] = useState(0);
   const [timerHandle, setTimerHandle] = useState<NodeJS.Timeout | null>(null);
 
+  // Edit modes for detected step
+  const [editMode, setEditMode] = useState<EditMode>("none");
+  const [drawnBoxes, setDrawnBoxes] = useState<DetectedWord[]>([]);
+  const [selectedSplits, setSelectedSplits] = useState<Set<string>>(new Set());
+  const [splitting, setSplitting] = useState(false);
+
+  // Drawing state
+  const [drawing, setDrawing] = useState(false);
+  const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
+  const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
   function startTimer() {
     setElapsed(0);
     const start = Date.now();
@@ -68,6 +82,183 @@ export default function OcrStepper({
   function stopTimer(h?: NodeJS.Timeout | null) {
     if (h) clearInterval(h);
     if (timerHandle) clearInterval(timerHandle);
+  }
+
+  // Convert screen coordinates to image natural coordinates
+  const screenToNatural = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    const img = imgRef.current;
+    if (!img || !imageNaturalWidth || !imageNaturalHeight) return null;
+    const rect = img.getBoundingClientRect();
+    const scaleX = imageNaturalWidth / rect.width;
+    const scaleY = imageNaturalHeight / rect.height;
+    return {
+      x: Math.round((clientX - rect.left) * scaleX),
+      y: Math.round((clientY - rect.top) * scaleY),
+    };
+  }, [imageNaturalWidth, imageNaturalHeight]);
+
+  // Drawing handlers
+  function handlePointerDown(e: React.PointerEvent) {
+    if (editMode !== "addMissing") return;
+    e.preventDefault();
+    const pt = screenToNatural(e.clientX, e.clientY);
+    if (!pt) return;
+    setDrawing(true);
+    setDrawStart(pt);
+    setDrawCurrent(pt);
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function handlePointerMove(e: React.PointerEvent) {
+    if (!drawing || editMode !== "addMissing") return;
+    e.preventDefault();
+    const pt = screenToNatural(e.clientX, e.clientY);
+    if (pt) setDrawCurrent(pt);
+  }
+
+  function handlePointerUp(e: React.PointerEvent) {
+    if (!drawing || !drawStart || !drawCurrent || editMode !== "addMissing") return;
+    e.preventDefault();
+    setDrawing(false);
+
+    const xLeft = Math.min(drawStart.x, drawCurrent.x);
+    const xRight = Math.max(drawStart.x, drawCurrent.x);
+    const yTop = Math.min(drawStart.y, drawCurrent.y);
+    const yBottom = Math.max(drawStart.y, drawCurrent.y);
+
+    // Only add if box is big enough
+    if (xRight - xLeft > 10 && yBottom - yTop > 10) {
+      setDrawnBoxes(prev => [...prev, { xLeft, xRight, yTop, yBottom }]);
+    }
+
+    setDrawStart(null);
+    setDrawCurrent(null);
+  }
+
+  // Click handler for split mode
+  function handleBoxClick(lineIdx: number, wordIdx: number) {
+    if (editMode !== "splitWords") return;
+    const key = `${lineIdx}-${wordIdx}`;
+    setSelectedSplits(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Add drawn boxes into the detection result
+  function applyDrawnBoxes() {
+    if (drawnBoxes.length === 0) return;
+
+    setDetectedLines(prev => {
+      const newLines = [...prev];
+      for (const box of drawnBoxes) {
+        // Find the line this box belongs to (by y overlap)
+        let bestLine = -1;
+        let bestOverlap = 0;
+        for (let li = 0; li < newLines.length; li++) {
+          const line = newLines[li];
+          const overlapTop = Math.max(box.yTop, line.yTop);
+          const overlapBottom = Math.min(box.yBottom, line.yBottom);
+          const overlap = Math.max(0, overlapBottom - overlapTop);
+          if (overlap > bestOverlap) {
+            bestOverlap = overlap;
+            bestLine = li;
+          }
+        }
+
+        if (bestLine >= 0 && bestOverlap > (box.yBottom - box.yTop) * 0.3) {
+          // Add to existing line, sort RTL
+          const line = { ...newLines[bestLine], words: [...newLines[bestLine].words, box] };
+          line.words.sort((a, b) => b.xRight - a.xRight);
+          line.yTop = Math.min(line.yTop, box.yTop);
+          line.yBottom = Math.max(line.yBottom, box.yBottom);
+          newLines[bestLine] = line;
+        } else {
+          // Create new line
+          newLines.push({
+            lineIndex: newLines.length,
+            yTop: box.yTop,
+            yBottom: box.yBottom,
+            words: [box],
+          });
+        }
+      }
+      // Re-sort lines by yTop
+      newLines.sort((a, b) => a.yTop - b.yTop);
+      newLines.forEach((l, i) => l.lineIndex = i);
+      return newLines;
+    });
+
+    setDrawnBoxes([]);
+    setEditMode("none");
+  }
+
+  // Split selected boxes via server re-detection
+  async function splitSelected() {
+    if (selectedSplits.size === 0) return;
+    setSplitting(true);
+    setError(null);
+
+    try {
+      // Collect regions to split
+      const regions: { lineIdx: number; wordIdx: number; xLeft: number; xRight: number; yTop: number; yBottom: number }[] = [];
+      for (const key of selectedSplits) {
+        const [li, wi] = key.split("-").map(Number);
+        const line = detectedLines[li];
+        if (!line) continue;
+        const word = line.words[wi];
+        if (!word) continue;
+        regions.push({ lineIdx: li, wordIdx: wi, ...word });
+      }
+
+      const res = await fetch(`/api/files/${fileId}/ocr-split`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ regions, method }),
+      });
+
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Split failed");
+      const data = await res.json();
+
+      // Replace original boxes with split results
+      setDetectedLines(prev => {
+        const newLines = prev.map(l => ({ ...l, words: [...l.words] }));
+
+        // Process in reverse order so indices don't shift
+        const sortedRegions = [...regions].sort((a, b) =>
+          a.lineIdx !== b.lineIdx ? b.lineIdx - a.lineIdx : b.wordIdx - a.wordIdx
+        );
+
+        for (const region of sortedRegions) {
+          const splitResult = data.results.find(
+            (r: { lineIdx: number; wordIdx: number }) => r.lineIdx === region.lineIdx && r.wordIdx === region.wordIdx
+          );
+          if (!splitResult || !splitResult.subBoxes || splitResult.subBoxes.length <= 1) continue;
+
+          const line = newLines[region.lineIdx];
+          if (!line) continue;
+
+          // Replace the word with sub-boxes
+          line.words.splice(region.wordIdx, 1, ...splitResult.subBoxes);
+        }
+
+        // Re-sort words RTL within each line
+        for (const line of newLines) {
+          line.words.sort((a: DetectedWord, b: DetectedWord) => b.xRight - a.xRight);
+        }
+
+        return newLines;
+      });
+
+      setSelectedSplits(new Set());
+      setEditMode("none");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Split failed");
+    } finally {
+      setSplitting(false);
+    }
   }
 
   async function doStraighten() {
@@ -96,6 +287,9 @@ export default function OcrStepper({
   async function doDetect() {
     setStep("detecting");
     setError(null);
+    setDrawnBoxes([]);
+    setSelectedSplits(new Set());
+    setEditMode("none");
     const h = startTimer();
     try {
       const res = await fetch(`/api/files/${fileId}/ocr-detect`, {
@@ -138,11 +332,9 @@ export default function OcrStepper({
 
   async function runAll() {
     setError(null);
-    // Run all steps in sequence
     setStep("straightening");
     const h = startTimer();
     try {
-      // Step 1: Straighten
       const preRes = await fetch(`/api/files/${fileId}/preprocess`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -155,7 +347,6 @@ export default function OcrStepper({
       }
       setStep("detecting");
 
-      // Step 2: Detect
       const detRes = await fetch(`/api/files/${fileId}/ocr-detect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -167,7 +358,6 @@ export default function OcrStepper({
       }
       setStep("running");
 
-      // Step 3: Full OCR
       const ocrRes = await fetch(`/api/files/${fileId}/ocr`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -185,6 +375,15 @@ export default function OcrStepper({
 
   const currentStep = stepIndex(step);
   const isWorking = ["straightening", "detecting", "running"].includes(step);
+  const totalWords = detectedLines.reduce((s, l) => s + l.words.length, 0);
+
+  // Preview rect while drawing
+  const previewRect = drawStart && drawCurrent ? {
+    xLeft: Math.min(drawStart.x, drawCurrent.x),
+    xRight: Math.max(drawStart.x, drawCurrent.x),
+    yTop: Math.min(drawStart.y, drawCurrent.y),
+    yBottom: Math.max(drawStart.y, drawCurrent.y),
+  } : null;
 
   return (
     <div className="space-y-3">
@@ -210,7 +409,7 @@ export default function OcrStepper({
       </div>
 
       {/* Action buttons */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 items-center">
         {step === "idle" && (
           <>
             <button onClick={doStraighten} className="px-4 py-2 rounded text-sm font-medium bg-gray-700 text-white hover:bg-gray-800">
@@ -236,16 +435,60 @@ export default function OcrStepper({
             </button>
           </>
         )}
-        {step === "detected" && (
+        {step === "detected" && editMode === "none" && (
           <>
             <div className="text-sm text-gray-600">
-              {detectedLines.reduce((s, l) => s + l.words.length, 0)} words in {detectedLines.length} lines
+              {totalWords} words in {detectedLines.length} lines
             </div>
             <button onClick={doOcr} className="px-4 py-2 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700">
               3. Recognize Text
             </button>
+            <button onClick={() => setEditMode("addMissing")}
+              className="px-3 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700">
+              + Add Missing
+            </button>
+            <button onClick={() => setEditMode("splitWords")}
+              className="px-3 py-2 rounded text-sm font-medium bg-orange-500 text-white hover:bg-orange-600">
+              Split Words
+            </button>
             <button onClick={doDetect} className="px-3 py-2 rounded text-sm bg-gray-200 text-gray-700 hover:bg-gray-300">
               Re-detect
+            </button>
+          </>
+        )}
+        {step === "detected" && editMode === "addMissing" && (
+          <>
+            <div className="text-sm text-green-700 font-medium">
+              Draw rectangles around missing words ({drawnBoxes.length} added)
+            </div>
+            <button onClick={applyDrawnBoxes} disabled={drawnBoxes.length === 0}
+              className="px-4 py-2 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+              Apply {drawnBoxes.length} box{drawnBoxes.length !== 1 ? "es" : ""}
+            </button>
+            {drawnBoxes.length > 0 && (
+              <button onClick={() => setDrawnBoxes(prev => prev.slice(0, -1))}
+                className="px-3 py-2 rounded text-sm bg-gray-200 text-gray-700 hover:bg-gray-300">
+                Undo Last
+              </button>
+            )}
+            <button onClick={() => { setEditMode("none"); setDrawnBoxes([]); }}
+              className="px-3 py-2 rounded text-sm bg-gray-200 text-gray-700 hover:bg-gray-300">
+              Cancel
+            </button>
+          </>
+        )}
+        {step === "detected" && editMode === "splitWords" && (
+          <>
+            <div className="text-sm text-orange-700 font-medium">
+              Tap boxes to split ({selectedSplits.size} selected)
+            </div>
+            <button onClick={splitSelected} disabled={selectedSplits.size === 0 || splitting}
+              className="px-4 py-2 rounded text-sm font-medium bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50">
+              {splitting ? "Splitting..." : `Split ${selectedSplits.size} word${selectedSplits.size !== 1 ? "s" : ""}`}
+            </button>
+            <button onClick={() => { setEditMode("none"); setSelectedSplits(new Set()); }}
+              className="px-3 py-2 rounded text-sm bg-gray-200 text-gray-700 hover:bg-gray-300">
+              Cancel
             </button>
           </>
         )}
@@ -266,31 +509,83 @@ export default function OcrStepper({
         <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">{error}</div>
       )}
 
-      {/* Bounding box overlay — shown after detection */}
+      {/* Bounding box overlay with drawing/selection */}
       {detectedLines.length > 0 && imageNaturalHeight > 0 && step !== "done" && (
-        <div className="relative border rounded overflow-hidden bg-gray-50">
+        <div
+          ref={overlayRef}
+          className="relative border rounded overflow-hidden bg-gray-50 select-none"
+          style={{ touchAction: editMode === "addMissing" ? "none" : "auto" }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={`/api/files/${fileId}/image?t=${Date.now()}`} alt="Detected" className="w-full" />
+          <img ref={imgRef} src={`/api/files/${fileId}/image?t=${Date.now()}`} alt="Detected" className="w-full" draggable={false} />
           <svg
-            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+            className="absolute top-0 left-0 w-full h-full"
             viewBox={`0 0 ${imageNaturalWidth} ${imageNaturalHeight}`}
             preserveAspectRatio="none"
+            style={{ pointerEvents: editMode === "splitWords" ? "auto" : "none" }}
           >
-            {detectedLines.map((line) =>
-              line.words.map((word, wi) => (
-                <rect
-                  key={`${line.lineIndex}-${wi}`}
-                  x={word.xLeft}
-                  y={word.yTop}
-                  width={word.xRight - word.xLeft}
-                  height={word.yBottom - word.yTop}
-                  fill="rgba(59, 130, 246, 0.15)"
-                  stroke="rgba(59, 130, 246, 0.6)"
-                  strokeWidth={Math.max(1, imageNaturalWidth / 600)}
-                />
-              ))
+            {/* Existing detected boxes */}
+            {detectedLines.map((line, li) =>
+              line.words.map((word, wi) => {
+                const key = `${li}-${wi}`;
+                const isSelected = selectedSplits.has(key);
+                return (
+                  <rect
+                    key={key}
+                    x={word.xLeft}
+                    y={word.yTop}
+                    width={word.xRight - word.xLeft}
+                    height={word.yBottom - word.yTop}
+                    fill={isSelected ? "rgba(249, 115, 22, 0.3)" : "rgba(59, 130, 246, 0.15)"}
+                    stroke={isSelected ? "rgba(249, 115, 22, 0.8)" : "rgba(59, 130, 246, 0.6)"}
+                    strokeWidth={Math.max(1, imageNaturalWidth / 600) * (isSelected ? 2 : 1)}
+                    style={{ cursor: editMode === "splitWords" ? "pointer" : "default", pointerEvents: editMode === "splitWords" ? "auto" : "none" }}
+                    onClick={() => handleBoxClick(li, wi)}
+                  />
+                );
+              })
+            )}
+            {/* Newly drawn boxes (green) */}
+            {drawnBoxes.map((box, i) => (
+              <rect
+                key={`drawn-${i}`}
+                x={box.xLeft}
+                y={box.yTop}
+                width={box.xRight - box.xLeft}
+                height={box.yBottom - box.yTop}
+                fill="rgba(34, 197, 94, 0.25)"
+                stroke="rgba(34, 197, 94, 0.8)"
+                strokeWidth={Math.max(1, imageNaturalWidth / 600) * 2}
+              />
+            ))}
+            {/* Preview rect while drawing */}
+            {previewRect && (
+              <rect
+                x={previewRect.xLeft}
+                y={previewRect.yTop}
+                width={previewRect.xRight - previewRect.xLeft}
+                height={previewRect.yBottom - previewRect.yTop}
+                fill="rgba(34, 197, 94, 0.15)"
+                stroke="rgba(34, 197, 94, 0.6)"
+                strokeWidth={Math.max(1, imageNaturalWidth / 600)}
+                strokeDasharray="8 4"
+              />
             )}
           </svg>
+          {/* Mode indicator overlay */}
+          {editMode === "addMissing" && (
+            <div className="absolute top-2 left-2 bg-green-600 text-white text-xs px-2 py-1 rounded shadow">
+              Draw mode — drag to add boxes
+            </div>
+          )}
+          {editMode === "splitWords" && (
+            <div className="absolute top-2 left-2 bg-orange-500 text-white text-xs px-2 py-1 rounded shadow">
+              Tap boxes to select for splitting
+            </div>
+          )}
         </div>
       )}
     </div>
