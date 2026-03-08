@@ -150,49 +150,47 @@ export async function POST(
   // Delete original word
   await prisma.oCRWord.delete({ where: { id: word.id } });
 
-  // Run TrOCR on each new word crop (non-blocking background)
+  // Run TrOCR on each new word crop to recognize text
   if (imageBuffer) {
-    (async () => {
-      try {
-        const cropPad = 3;
-        const batchForm = new FormData();
-        for (const nw of newWords) {
-          if (nw.xLeft == null || nw.xRight == null) continue;
-          const left = Math.max(0, nw.xLeft - cropPad);
-          const top = Math.max(0, yTop - cropPad);
-          const right = nw.xRight + cropPad;
-          const bottom = yBottom + cropPad;
-          const w = right - left;
-          const h = bottom - top;
-          if (w < 5 || h < 5) continue;
-          const buf = await sharp(imageBuffer!)
-            .extract({ left, top, width: w, height: h })
-            .jpeg({ quality: 90 })
-            .toBuffer();
-          batchForm.append("images", new Blob([new Uint8Array(buf)], { type: "image/jpeg" }), `w${nw.wordIndex}.jpg`);
-        }
+    try {
+      const cropPad = 3;
+      const batchForm = new FormData();
+      for (const nw of newWords) {
+        if (nw.xLeft == null || nw.xRight == null) continue;
+        const left = Math.max(0, nw.xLeft - cropPad);
+        const top = Math.max(0, yTop - cropPad);
+        const right = nw.xRight + cropPad;
+        const bottom = yBottom + cropPad;
+        const w = right - left;
+        const h = bottom - top;
+        if (w < 5 || h < 5) continue;
+        const buf = await sharp(imageBuffer)
+          .extract({ left, top, width: w, height: h })
+          .jpeg({ quality: 90 })
+          .toBuffer();
+        batchForm.append("images", new Blob([new Uint8Array(buf)], { type: "image/jpeg" }), `w${nw.wordIndex}.jpg`);
+      }
 
-        const res = await fetch(`${TROCR_SERVER}/predict_batch`, {
-          method: "POST",
-          body: batchForm,
-          signal: AbortSignal.timeout(30000),
-        });
+      const res = await fetch(`${TROCR_SERVER}/predict_batch`, {
+        method: "POST",
+        body: batchForm,
+        signal: AbortSignal.timeout(30000),
+      });
 
-        if (res.ok) {
-          const data = await res.json();
-          const results = data.results || [];
-          for (let i = 0; i < Math.min(results.length, newWords.length); i++) {
-            const text = results[i].text || "";
-            if (text) {
-              await prisma.oCRWord.update({
-                where: { id: newWords[i].id },
-                data: { rawText: text, correctedText: text, modelText: text },
-              });
-            }
+      if (res.ok) {
+        const data = await res.json();
+        const results = data.results || [];
+        for (let i = 0; i < Math.min(results.length, newWords.length); i++) {
+          const text = results[i].text || "";
+          if (text) {
+            await prisma.oCRWord.update({
+              where: { id: newWords[i].id },
+              data: { rawText: text, correctedText: text, modelText: text },
+            });
           }
         }
-      } catch { /* TrOCR failed — words keep original text */ }
-    })();
+      }
+    } catch { /* TrOCR failed — words keep original text */ }
   }
 
   return NextResponse.json({ success: true, words: newWords, usedDocTR: splitXs.length === parts - 1 });
