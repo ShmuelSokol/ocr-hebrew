@@ -524,8 +524,8 @@ export default function EditorPage() {
     if (newLeft < 0) newLeft = 0;
     if (newTop < 0) newTop = 0;
     if (newRight - newLeft < 5 || newBottom - newTop < 5) return;
-    // Save to server
-    fetch(`/api/words/${wordId}`, {
+    // Save to server (await so Re-OCR reads updated bounds)
+    await fetch(`/api/words/${wordId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ xLeft: newLeft, xRight: newRight, yTop: newTop, yBottom: newBottom }),
