@@ -412,8 +412,33 @@ export default function EditorPage() {
 
   async function loadResultKeepScroll() {
     const scrollY = window.scrollY;
-    await loadResult();
-    requestAnimationFrame(() => window.scrollTo(0, scrollY));
+    // Inline the fetch logic without setLoading to avoid layout shift
+    const [resultRes, fileRes] = await Promise.all([
+      fetch(`/api/files/${fileId}/result`),
+      fetch(`/api/files`),
+    ]);
+    const resultData = await resultRes.json();
+    const filesData = await fileRes.json();
+    const file = filesData.find((f: { id: string }) => f.id === fileId);
+    if (file) {
+      setFilename(file.filename);
+      setFileStatus(file.status);
+      setProfileId(file.profileId || null);
+      setProfileName(file.profile?.name || null);
+    }
+    if (resultData?.id) {
+      setResult(resultData);
+      const corrected = resultData.lines.reduce(
+        (sum: number, line: Line) =>
+          sum + line.words.filter((w: Word) => w.correctedText && w.correctedText !== w.rawText).length,
+        0
+      );
+      setCorrectionCount(corrected);
+    }
+    // Restore scroll after React re-renders (double rAF to wait for paint)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => window.scrollTo(0, scrollY));
+    });
   }
 
   async function deleteWord(wordId: string) {
