@@ -38,6 +38,11 @@ export async function POST(
     });
   }
 
+  // Store original bounds on both halves so splits are trackable for bbox retraining
+  // originalXLeft/originalXRight = the original merged word's full span
+  const origLeft = word.originalXLeft ?? word.xLeft;
+  const origRight = word.originalXRight ?? word.xRight;
+
   // Create right word (in Hebrew RTL, right side = first part)
   const rightWord = await prisma.oCRWord.create({
     data: {
@@ -47,6 +52,8 @@ export async function POST(
       correctedText: "",
       xLeft: mid,
       xRight: word.xRight,
+      originalXLeft: origLeft,
+      originalXRight: origRight,
     },
   });
 
@@ -59,6 +66,8 @@ export async function POST(
       correctedText: "",
       xLeft: word.xLeft,
       xRight: mid,
+      originalXLeft: origLeft,
+      originalXRight: origRight,
     },
   });
 
