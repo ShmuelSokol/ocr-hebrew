@@ -314,10 +314,15 @@ export default function OcrStepper({
     setError(null);
     const h = startTimer();
     try {
+      // Pass the (possibly user-corrected) detected boxes so OCR skips re-detection
       const res = await fetch(`/api/files/${fileId}/ocr`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, skipPreprocess: true }),
+        body: JSON.stringify({
+          method,
+          skipPreprocess: true,
+          detectedBoxes: detectedLines.length > 0 ? detectedLines : undefined,
+        }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "OCR failed");
       setStep("done");

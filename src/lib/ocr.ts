@@ -466,26 +466,45 @@ function correctWithDictionary(
 
 const TROCR_SERVER = process.env["TROCR_SERVER_URL"] || "http://localhost:8765";
 
+interface PreDetectedLine {
+  lineIndex: number;
+  yTop: number;
+  yBottom: number;
+  words: { xLeft: number; xRight: number; yTop: number; yBottom: number }[];
+}
+
 async function ocrWithDocTR(
   imageBuffer: Buffer,
+  preDetectedBoxes?: PreDetectedLine[],
 ): Promise<{ lines: OCRLineResult[]; rawText: string }> {
-  // Step 1: Send full page image to DocTR /detect endpoint for bounding boxes
-  const formData = new FormData();
-  formData.append("image", new Blob([new Uint8Array(imageBuffer)], { type: "image/jpeg" }), "page.jpg");
+  let detection: { lines: PreDetectedLine[] };
 
-  const detectRes = await fetch(`${TROCR_SERVER}/detect`, {
-    method: "POST",
-    body: formData,
-    signal: AbortSignal.timeout(30000),
-  });
+  if (preDetectedBoxes && preDetectedBoxes.length > 0) {
+    // Use pre-detected boxes (from stepper with user corrections)
+    detection = { lines: preDetectedBoxes };
+    const totalWords = preDetectedBoxes.reduce((s, l) => s + l.words.length, 0);
+    console.log(`[OCR] Using pre-detected boxes: ${totalWords} words in ${preDetectedBoxes.length} lines`);
+  } else {
+    // Step 1: Send full page image to DocTR /detect endpoint for bounding boxes
+    const formData = new FormData();
+    formData.append("image", new Blob([new Uint8Array(imageBuffer)], { type: "image/jpeg" }), "page.jpg");
 
-  if (!detectRes.ok) {
-    const err = await detectRes.text();
-    throw new Error(`DocTR detection failed (${detectRes.status}): ${err}`);
+    const detectRes = await fetch(`${TROCR_SERVER}/detect`, {
+      method: "POST",
+      body: formData,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!detectRes.ok) {
+      const err = await detectRes.text();
+      throw new Error(`DocTR detection failed (${detectRes.status}): ${err}`);
+    }
+
+    detection = await detectRes.json();
+    const totalWords = detection.lines?.reduce((s: number, l: PreDetectedLine) => s + l.words.length, 0) || 0;
+    const totalLines = detection.lines?.length || 0;
+    console.log(`[OCR] DocTR: ${totalWords} words in ${totalLines} lines`);
   }
-
-  const detection = await detectRes.json();
-  console.log(`[OCR] DocTR: ${detection.total_words} words in ${detection.total_lines} lines (${detection.time_ms}ms)`);
 
   if (!detection.lines || detection.lines.length === 0) {
     return { lines: [], rawText: "" };
@@ -602,12 +621,13 @@ export async function runOCR(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   fewShotLines?: FewShotLine[],
   method: OCRMethod = "azure",
+  preDetectedBoxes?: PreDetectedLine[],
 ): Promise<{ rawText: string; lines: OCRLineResult[] }> {
   let result: { rawText: string; lines: OCRLineResult[] };
 
   if (method === "doctr") {
     // In-house: DocTR bounding boxes + TrOCR text recognition
-    result = await ocrWithDocTR(imageBuffer);
+    result = await ocrWithDocTR(imageBuffer, preDetectedBoxes);
   } else {
     // Azure Document Intelligence: word-level bounding boxes + Hebrew text
     result = await ocrWithAzure(imageBuffer);

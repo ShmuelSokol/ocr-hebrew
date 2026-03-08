@@ -23,7 +23,7 @@ export async function POST(
 
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { firstLineHint, fewShotLines, method: requestedMethod, skipPreprocess } = await req.json().catch(() => ({}));
+  const { firstLineHint, fewShotLines, method: requestedMethod, skipPreprocess, detectedBoxes } = await req.json().catch(() => ({}));
   const method: OCRMethod = requestedMethod === "doctr" ? "doctr" : "azure";
 
   // Download image from Supabase Storage
@@ -83,7 +83,7 @@ export async function POST(
   await prisma.file.update({ where: { id: file.id }, data: { status: "processing" } });
 
   try {
-    const result = await runOCR(base64, mediaType, imageData, userId, file.id, file.profileId || undefined, firstLineHint, fewShotLines, method);
+    const result = await runOCR(base64, mediaType, imageData, userId, file.id, file.profileId || undefined, firstLineHint, fewShotLines, method, detectedBoxes);
 
     // Delete old result if exists
     const oldResult = await prisma.oCRResult.findUnique({ where: { fileId: file.id } });
