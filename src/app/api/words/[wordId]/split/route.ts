@@ -48,8 +48,8 @@ export async function POST(
     data: {
       lineId: word.lineId,
       wordIndex: word.wordIndex,
-      rawText: "",
-      correctedText: "",
+      rawText: word.correctedText || word.rawText,
+      correctedText: word.correctedText || word.rawText,
       xLeft: mid,
       xRight: word.xRight,
       originalXLeft: origLeft,
@@ -62,8 +62,8 @@ export async function POST(
     data: {
       lineId: word.lineId,
       wordIndex: word.wordIndex + 1,
-      rawText: "",
-      correctedText: "",
+      rawText: word.correctedText || word.rawText,
+      correctedText: word.correctedText || word.rawText,
       xLeft: word.xLeft,
       xRight: mid,
       originalXLeft: origLeft,
