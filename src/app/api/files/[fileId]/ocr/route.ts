@@ -39,16 +39,34 @@ export async function POST(
 
   // Auto-straighten and enhance the image
   const sharp = (await import("sharp")).default;
-  let pipeline = sharp(rawImageData).rotate(); // auto-rotate from EXIF
 
-  // Deskew: detect skew angle via sharp's trim heuristic isn't great,
-  // so we normalize contrast + sharpen for better OCR
-  pipeline = pipeline
-    .normalize()         // auto contrast/levels
+  // Step 1: EXIF rotation + normalize + sharpen
+  let imageData = await sharp(rawImageData)
+    .rotate()              // auto-rotate from EXIF
+    .normalize()           // auto contrast/levels
     .sharpen({ sigma: 1.0 }) // mild sharpen for text clarity
-    .jpeg({ quality: 95 });
+    .jpeg({ quality: 95 })
+    .toBuffer();
 
-  const imageData = await pipeline.toBuffer();
+  // Step 2: Deskew via TrOCR server (OpenCV-based skew detection)
+  try {
+    const deskewForm = new FormData();
+    deskewForm.append("image", new Blob([new Uint8Array(imageData)], { type: "image/jpeg" }), "page.jpg");
+    const deskewRes = await fetch(`${TROCR_SERVER}/straighten`, {
+      method: "POST",
+      body: deskewForm,
+      signal: AbortSignal.timeout(30000),
+    });
+    if (deskewRes.ok && deskewRes.headers.get("content-type")?.includes("image")) {
+      const angle = deskewRes.headers.get("X-Skew-Angle");
+      if (angle && angle !== "0") {
+        imageData = Buffer.from(await deskewRes.arrayBuffer());
+        console.log(`[OCR] Deskewed image by ${angle}°`);
+      }
+    }
+  } catch {
+    // Deskew server unavailable — continue with original
+  }
 
   // Save the enhanced image back to storage so the editor shows the corrected version
   await supabase.storage.from(BUCKET).upload(file.storagePath, imageData, {
