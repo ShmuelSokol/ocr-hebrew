@@ -29,13 +29,18 @@ export async function POST(
   const yBottom = word.yBottom ?? word.line.yBottom;
   const wordText = word.correctedText || word.rawText;
 
+  // Download image (used for DocTR detection + TrOCR recognition)
+  const sharp = (await import("sharp")).default;
+  let imageBuffer: Buffer | null = null;
+  try {
+    const { data: blob, error } = await supabase.storage.from(BUCKET).download(word.line.result.file.storagePath);
+    if (!error && blob) imageBuffer = Buffer.from(await blob.arrayBuffer());
+  } catch { /* ignore */ }
+
   // Try DocTR smart detection to find sub-word boundaries
   let splitXs: number[] = [];
-  try {
-    const sharp = (await import("sharp")).default;
-    const { data: blob, error } = await supabase.storage.from(BUCKET).download(word.line.result.file.storagePath);
-    if (!error && blob) {
-      const imageBuffer = Buffer.from(await blob.arrayBuffer());
+  if (imageBuffer) {
+    try {
       const pad = 5;
       const cropLeft = Math.max(0, word.xLeft - pad);
       const cropTop = Math.max(0, yTop - pad);
@@ -62,7 +67,6 @@ export async function POST(
 
         if (detectRes.ok) {
           const detection = await detectRes.json();
-          // Collect all detected word boxes, convert from crop-relative to absolute coords
           const detectedBoxes: { xLeft: number; xRight: number }[] = [];
           for (const line of detection.lines || []) {
             for (const wb of line.words || []) {
@@ -72,28 +76,23 @@ export async function POST(
               });
             }
           }
-          // Sort right-to-left (Hebrew RTL)
           detectedBoxes.sort((a, b) => b.xLeft - a.xLeft);
 
           if (detectedBoxes.length >= parts) {
-            // Use the gaps between detected boxes as split points
-            // Take the (parts-1) largest gaps between adjacent boxes
             const gaps: { x: number; gap: number }[] = [];
             for (let i = 0; i < detectedBoxes.length - 1; i++) {
-              // In RTL sorted order, box[i] is to the right of box[i+1]
               const gapX = Math.round((detectedBoxes[i].xLeft + detectedBoxes[i + 1].xRight) / 2);
               const gapSize = detectedBoxes[i].xLeft - detectedBoxes[i + 1].xRight;
               gaps.push({ x: gapX, gap: gapSize });
             }
-            // Sort by gap size descending, take top (parts-1)
             gaps.sort((a, b) => b.gap - a.gap);
-            splitXs = gaps.slice(0, parts - 1).map(g => g.x).sort((a, b) => b - a); // sort right-to-left
+            splitXs = gaps.slice(0, parts - 1).map(g => g.x).sort((a, b) => b - a);
           }
         }
       }
+    } catch {
+      // DocTR failed — fall back to even splits
     }
-  } catch {
-    // DocTR failed — fall back to even splits
   }
 
   // Fallback: even splits if DocTR didn't find enough
@@ -150,6 +149,51 @@ export async function POST(
 
   // Delete original word
   await prisma.oCRWord.delete({ where: { id: word.id } });
+
+  // Run TrOCR on each new word crop (non-blocking background)
+  if (imageBuffer) {
+    (async () => {
+      try {
+        const cropPad = 3;
+        const batchForm = new FormData();
+        for (const nw of newWords) {
+          if (nw.xLeft == null || nw.xRight == null) continue;
+          const left = Math.max(0, nw.xLeft - cropPad);
+          const top = Math.max(0, yTop - cropPad);
+          const right = nw.xRight + cropPad;
+          const bottom = yBottom + cropPad;
+          const w = right - left;
+          const h = bottom - top;
+          if (w < 5 || h < 5) continue;
+          const buf = await sharp(imageBuffer!)
+            .extract({ left, top, width: w, height: h })
+            .jpeg({ quality: 90 })
+            .toBuffer();
+          batchForm.append("images", new Blob([new Uint8Array(buf)], { type: "image/jpeg" }), `w${nw.wordIndex}.jpg`);
+        }
+
+        const res = await fetch(`${TROCR_SERVER}/predict_batch`, {
+          method: "POST",
+          body: batchForm,
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const results = data.results || [];
+          for (let i = 0; i < Math.min(results.length, newWords.length); i++) {
+            const text = results[i].text || "";
+            if (text) {
+              await prisma.oCRWord.update({
+                where: { id: newWords[i].id },
+                data: { rawText: text, correctedText: text, modelText: text },
+              });
+            }
+          }
+        }
+      } catch { /* TrOCR failed — words keep original text */ }
+    })();
+  }
 
   return NextResponse.json({ success: true, words: newWords, usedDocTR: splitXs.length === parts - 1 });
 }
