@@ -19,12 +19,14 @@ export async function POST(
   });
   if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { contrast, brightness, sharpen: doSharpen, grayscale, rotate, deskew } = await req.json();
+  const { contrast, brightness, sharpen: doSharpen, grayscale, rotate, deskew, cumulativeAngle } = await req.json();
 
-  // Download from Supabase
+  // Always start from the ORIGINAL image to avoid cumulative quality loss
+  // (each re-process of an already-processed JPEG degrades quality via recompression + interpolation)
+  const sourcePath = file.originalStoragePath || file.storagePath;
   const { data: blob, error } = await supabase.storage
     .from(BUCKET)
-    .download(file.storagePath);
+    .download(sourcePath);
 
   if (error || !blob) {
     return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
@@ -38,6 +40,11 @@ export async function POST(
   if (deskew) {
     detectedAngle = await detectSkew(imageData);
     rotateAngle = -detectedAngle; // negate to correct
+  }
+  // If a cumulative angle is provided (sum of all prior rotations),
+  // apply it all at once from the original image instead of incrementally
+  if (cumulativeAngle != null && cumulativeAngle !== 0) {
+    rotateAngle = cumulativeAngle;
   }
 
   let pipeline = sharp(imageData);
@@ -84,5 +91,6 @@ export async function POST(
     success: true,
     size: processed.length,
     skewAngle: detectedAngle,
+    appliedAngle: rotateAngle,
   });
 }

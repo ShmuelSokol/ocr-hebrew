@@ -40,13 +40,16 @@ export async function POST(
 
   const results: { lineIdx: number; wordIdx: number; subBoxes: { xLeft: number; xRight: number; yTop: number; yBottom: number }[] }[] = [];
 
+  const metadata = await sharp(imageBuffer).metadata();
+  const imgW = metadata.width || 1;
+  const imgH = metadata.height || 1;
+
   for (const region of regions) {
-    // Add padding around the region for better detection
-    const metadata = await sharp(imageBuffer).metadata();
-    const imgW = metadata.width || 1;
-    const imgH = metadata.height || 1;
-    const padX = Math.floor((region.xRight - region.xLeft) * 0.1);
-    const padY = Math.floor((region.yBottom - region.yTop) * 0.15);
+    // Generous padding for better detection context
+    const regionW = region.xRight - region.xLeft;
+    const regionH = region.yBottom - region.yTop;
+    const padX = Math.max(20, Math.floor(regionW * 0.5));
+    const padY = Math.max(15, Math.floor(regionH * 0.6));
     const cropLeft = Math.max(0, region.xLeft - padX);
     const cropTop = Math.max(0, region.yTop - padY);
     const cropRight = Math.min(imgW, region.xRight + padX);
@@ -60,11 +63,24 @@ export async function POST(
     }
 
     try {
-      // Crop the region
-      const cropBuffer = await sharp(imageBuffer)
+      // Crop the region, upscale if too small for reliable detection
+      const MIN_DIM = 300;
+      let cropBuffer = await sharp(imageBuffer)
         .extract({ left: cropLeft, top: cropTop, width: cropW, height: cropH })
         .jpeg({ quality: 95 })
         .toBuffer();
+
+      // Track scale factor for mapping back
+      let scale = 1;
+      if (cropW < MIN_DIM || cropH < MIN_DIM) {
+        scale = Math.max(MIN_DIM / cropW, MIN_DIM / cropH);
+        const scaledW = Math.round(cropW * scale);
+        const scaledH = Math.round(cropH * scale);
+        cropBuffer = await sharp(cropBuffer)
+          .resize(scaledW, scaledH, { fit: "fill" })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
 
       // Send to DocTR /detect
       const formData = new FormData();
@@ -83,15 +99,15 @@ export async function POST(
 
       const detection = await detectRes.json();
 
-      // Map sub-boxes back to absolute coordinates
+      // Map sub-boxes back to absolute coordinates (undo scale then add crop offset)
       const subBoxes: { xLeft: number; xRight: number; yTop: number; yBottom: number }[] = [];
       for (const line of (detection.lines || [])) {
         for (const word of line.words) {
           subBoxes.push({
-            xLeft: word.xLeft + cropLeft,
-            xRight: word.xRight + cropLeft,
-            yTop: word.yTop + cropTop,
-            yBottom: word.yBottom + cropTop,
+            xLeft: Math.round(word.xLeft / scale) + cropLeft,
+            xRight: Math.round(word.xRight / scale) + cropLeft,
+            yTop: Math.round(word.yTop / scale) + cropTop,
+            yBottom: Math.round(word.yBottom / scale) + cropTop,
           });
         }
       }

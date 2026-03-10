@@ -3,11 +3,18 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { supabase, BUCKET } from "@/lib/supabase";
+import { trackActivity } from "@/lib/activity";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = (session.user as { id: string }).id;
+  trackActivity(userId, "Viewed training data");
+
+  const url = new URL(req.url);
+  const limit = parseInt(url.searchParams.get("limit") || "0");
+  const offset = parseInt(url.searchParams.get("offset") || "0");
+  const profileFilter = url.searchParams.get("profileId") || undefined;
 
   const profiles = await prisma.handwritingProfile.findMany({
     where: { userId },
@@ -15,20 +22,29 @@ export async function GET() {
   });
   const profileIds = profiles.map((p) => p.id);
 
+  const where = {
+    profileId: profileFilter ? profileFilter : { in: profileIds },
+  };
+
+  const total = await prisma.trainingExample.count({ where });
+
   const examples = await prisma.trainingExample.findMany({
-    where: { profileId: { in: profileIds } },
+    where,
     orderBy: { createdAt: "desc" },
     include: { profile: { select: { name: true } } },
+    ...(limit > 0 ? { take: limit, skip: offset } : {}),
   });
 
   return NextResponse.json({
     profiles,
+    total,
     examples: examples.map((e) => ({
       id: e.id,
       text: e.text,
       profileId: e.profileId,
       profileName: e.profile.name,
       source: e.source,
+      sourceLineId: e.sourceLineId,
       createdAt: e.createdAt,
     })),
   });

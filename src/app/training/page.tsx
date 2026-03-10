@@ -128,6 +128,12 @@ export default function TrainingPage() {
         </div>
         <div className="flex items-center gap-3">
           <button
+            onClick={() => router.push("/training/review")}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            Review Data
+          </button>
+          <button
             onClick={() => router.push("/training/monitor")}
             className="text-sm text-blue-600 hover:underline"
           >

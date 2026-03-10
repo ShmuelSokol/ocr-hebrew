@@ -10,12 +10,15 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String    @id @default(cuid())
+  email        String    @unique
   name         String?
   passwordHash String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
+  lastSeenAt   DateTime?
+  lastAction   String?
   files        File[]
+  projects     Project[]
   profiles     HandwritingProfile[]
   tokenUsage   TokenUsage[]
 }
@@ -33,19 +36,50 @@ model HandwritingProfile {
   updatedAt        DateTime @updatedAt
 }
 
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  files       File[]
+  approvedTexts ApprovedText[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 model File {
   id                  String   @id @default(cuid())
   filename            String
   storagePath         String
   originalStoragePath String?
   status              String   @default("pending")
+  textApproved        Boolean  @default(false)
+  detectedBoxes       Json?
   userId      String
   user        User     @relation(fields: [userId], references: [id])
   profileId   String?
   profile     HandwritingProfile? @relation(fields: [profileId], references: [id])
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id])
   ocrResult   OCRResult?
+  approvedTexts ApprovedText[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model ApprovedText {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fileId      String
+  file        File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  text        String
+  lineIndex   Int
+  sourceFilename String
+  approvedAt  DateTime @default(now())
+
+  @@unique([projectId, fileId, lineIndex])
 }
 
 model OCRResult {

@@ -37,6 +37,13 @@ Web app that converts handwritten Hebrew Talmud/Gemara study notes into digital 
 | `src/app/api/files/[fileId]/trocr/route.ts` | Re-run TrOCR inference on existing OCR results |
 | `src/app/api/files/[fileId]/image/route.ts` | Serve images from Supabase Storage |
 | `src/app/api/words/[wordId]/route.ts` | Word correction — saves to handwriting profile + training example |
+| `src/app/admin/page.tsx` | Admin dashboard — user list, online status, activity tracking |
+| `src/app/api/admin/route.ts` | Admin API — password auth, user stats |
+| `src/app/dictionary/page.tsx` | Talmudic dictionary browser — abbreviations, sages, vocab, bigrams |
+| `src/app/api/dictionary/route.ts` | Dictionary API — serves compiled talmudic vocabulary stats |
+| `src/app/training/review/page.tsx` | Training data review — inline text editing, bbox nudge, recrop |
+| `src/lib/talmudic-dictionary.ts` | Talmudic vocabulary: abbreviations, sage names, vocab, bigrams |
+| `src/lib/activity.ts` | User activity tracking (fire-and-forget lastSeenAt/lastAction) |
 | `prisma/schema.prisma` | Database schema |
 | `Dockerfile` | Multi-stage Docker build for Railway |
 
@@ -81,6 +88,7 @@ Located in `../training/` (sibling to `web/` directory).
 |------|---------|
 | `setup.sh` | Install Python 3.11, create venv, install PyTorch + deps |
 | `download_data.py` | Download training examples from web app API |
+| `dedup_data.py` | Remove duplicate images (exact + perceptual hash) from training data |
 | `validate_data.py` | Audit data quality (images, labels, duplicates) |
 | `train.py` | TrOCR-small fine-tuning (MPS, augmentation, early stopping, checkpoints) |
 | `inference.py` | Run inference on single images, directories, or benchmark |
@@ -105,12 +113,19 @@ pip install fastapi uvicorn python-multipart python-doctr[torch] opencv-python-h
 ```bash
 cd ocr-hebrew/training
 source venv/bin/activate
-python download_data.py --cookie SESSION_COOKIE
+python download_data.py --cookie SESSION_COOKIE  # or use direct DB download (see below)
+python dedup_data.py --apply    # Remove perceptual duplicates (keeps best-labeled version)
 python validate_data.py
 python train.py          # Auto-resumes from previous best checkpoint
 python train.py --fresh  # Start from base model (ignore previous)
 python inference.py --model output/checkpoints/best --image word.jpg
 ```
+
+### Data quality pipeline:
+- **Dedup**: `dedup_data.py` uses 16x16 perceptual hash to find near-identical images (even with slightly different bounding boxes). Keeps the best-labeled copy (prefers corrected > confirmed, proper geresh/gershayim).
+- **Full-line filter**: Training data should be word-level crops only. Full-line images (width > 400px or aspect ratio > 6) confuse TrOCR which expects single words. Remove these from the website review page.
+- **Conflicting labels**: Same image with different text actively hurts training. The dedup script resolves these by keeping the best-scored version.
+- **Data quantity guide**: ~2k examples → 33% CER, ~5k → 20-30% CER, ~10k → 10-20% CER
 
 ### DocTR detection fine-tuning workflow:
 ```bash
@@ -142,6 +157,7 @@ python serve.py          # Starts on port 8765
 - Tunnel runs as a brew service (`brew services start cloudflared`)
 - Config at `~/.cloudflared/config.yml`, tunnel ID: `e28ffe57-2733-490b-87ac-fb8d6e9641c2`
 - Cannot run simultaneously with training (both need GPU/model in memory)
+- **Workaround**: Run `serve.py --cpu --model output/checkpoints/best_v1_1128examples` to serve on CPU while training uses MPS GPU. Slower inference but allows data curation during training.
 
 ## Deployment
 

@@ -3,17 +3,19 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { supabase, BUCKET } from "@/lib/supabase";
+import { trackActivity } from "@/lib/activity";
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const userId = (session.user as { id: string }).id;
+  trackActivity(userId, "Viewed dashboard");
   const status = req.nextUrl.searchParams.get("status");
 
   const files = await prisma.file.findMany({
     where: { userId, ...(status ? { status } : {}) },
-    include: { profile: true },
+    include: { profile: true, project: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -28,6 +30,7 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as globalThis.File;
   const profileId = formData.get("profileId") as string | null;
+  const projectId = formData.get("projectId") as string | null;
 
   if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
@@ -51,6 +54,7 @@ export async function POST(req: NextRequest) {
       storagePath,
       userId,
       profileId: profileId || undefined,
+      projectId: projectId || undefined,
     },
   });
 

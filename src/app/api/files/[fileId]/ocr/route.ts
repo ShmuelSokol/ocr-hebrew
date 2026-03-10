@@ -27,9 +27,11 @@ export async function POST(
   const method: OCRMethod = requestedMethod === "doctr" ? "doctr" : "azure";
 
   // Download image from Supabase Storage
+  // If preprocessing, use the original image to avoid cumulative quality loss
+  const downloadPath = skipPreprocess ? file.storagePath : (file.originalStoragePath || file.storagePath);
   const { data: blob, error } = await supabase.storage
     .from(BUCKET)
-    .download(file.storagePath);
+    .download(downloadPath);
 
   if (error || !blob) {
     return NextResponse.json({ error: "Could not read file from storage" }, { status: 500 });
@@ -118,7 +120,7 @@ export async function POST(
       },
     });
 
-    await prisma.file.update({ where: { id: file.id }, data: { status: "completed" } });
+    await prisma.file.update({ where: { id: file.id }, data: { status: "ready" } });
 
     if (method === "azure") {
       // Run TrOCR in background for Azure results — silently skip if server is down

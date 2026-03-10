@@ -10,7 +10,7 @@ export async function POST(
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { text, afterWordIndex } = await req.json();
+  const { text, afterWordIndex, xLeft, xRight, yTop, yBottom } = await req.json();
   if (!text?.trim()) return NextResponse.json({ error: "Text required" }, { status: 400 });
 
   const line = await prisma.oCRLine.findUnique({
@@ -32,13 +32,16 @@ export async function POST(
     }
   }
 
-  // Create the new word
+  // Create the new word (with optional bounding box)
   const newWord = await prisma.oCRWord.create({
     data: {
       lineId: params.lineId,
       wordIndex: insertAt,
       rawText: text.trim(),
       correctedText: text.trim(),
+      ...(xLeft != null && xRight != null && yTop != null && yBottom != null
+        ? { xLeft: Math.round(xLeft), xRight: Math.round(xRight), yTop: Math.round(yTop), yBottom: Math.round(yBottom) }
+        : {}),
     },
   });
 

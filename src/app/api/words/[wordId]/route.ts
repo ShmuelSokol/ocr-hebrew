@@ -94,20 +94,24 @@ async function saveWordTraining(
   word: { id: string; wordIndex: number; xLeft: number | null; xRight: number | null; yTop?: number | null; yBottom?: number | null },
   text: string,
 ) {
-  if (!file.profileId || !text.trim() || word.xLeft == null || word.xRight == null) return;
+  if (!file.profileId || word.xLeft == null || word.xRight == null) return;
 
-  // Check if we already have a training example for this word
-  const existing = await prisma.trainingExample.findUnique({
-    where: { sourceLineId: word.id },
-  });
+  const isNegative = !text.trim();
 
-  if (existing) {
-    // Update text only — image crop is the same
-    await prisma.trainingExample.update({
-      where: { id: existing.id },
-      data: { text },
+  // For positive examples, check if we already have one for this word
+  if (!isNegative) {
+    const existing = await prisma.trainingExample.findUnique({
+      where: { sourceLineId: word.id },
     });
-    return;
+
+    if (existing) {
+      // Update text only — image crop is the same
+      await prisma.trainingExample.update({
+        where: { id: existing.id },
+        data: { text },
+      });
+      return;
+    }
   }
 
   // Crop the word from the image
@@ -149,8 +153,9 @@ async function saveWordTraining(
       profileId: file.profileId,
       storagePath,
       text,
-      source: "corrected",
-      sourceLineId: word.id,
+      source: isNegative ? "deleted" : "corrected",
+      // Don't link negative examples to the word ID (word will be deleted)
+      sourceLineId: isNegative ? undefined : word.id,
     },
   });
 }
@@ -228,13 +233,24 @@ export async function DELETE(
 ) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = (session.user as { id: string }).id;
 
   const word = await prisma.oCRWord.findUnique({
     where: { id: params.wordId },
-    include: { line: true },
+    include: { line: { include: { result: { include: { file: true } } } } },
   });
 
   if (!word) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Save as negative training example (empty text) before deleting
+  // This teaches the detector to avoid false positives on blank regions
+  const file = word.line.result.file;
+  if (file.profileId && word.xLeft != null && word.xRight != null) {
+    saveWordTraining(userId, file, word.line, word, "").catch(() => {});
+  }
+
+  // Delete any existing positive training example for this word
+  await prisma.trainingExample.deleteMany({ where: { sourceLineId: params.wordId } });
 
   await prisma.oCRWord.delete({ where: { id: params.wordId } });
 

@@ -16,12 +16,22 @@ interface FileRecord {
   status: string;
   createdAt: string;
   profile: { name: string } | null;
+  project: { id: string; name: string } | null;
+}
+
+interface ProjectRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  _count: { files: number; approvedTexts: number };
 }
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [files, setFiles] = useState<FileRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [newProjectName, setNewProjectName] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("");
   const [newProfileName, setNewProfileName] = useState("");
@@ -43,14 +53,16 @@ export default function Dashboard() {
   } | null>(null);
 
   const loadData = useCallback(async () => {
-    const [filesRes, profilesRes, usageRes] = await Promise.all([
+    const [filesRes, profilesRes, usageRes, projectsRes] = await Promise.all([
       fetch("/api/files"),
       fetch("/api/profiles"),
       fetch("/api/usage"),
+      fetch("/api/projects"),
     ]);
     setFiles(await filesRes.json());
     setProfiles(await profilesRes.json());
     setUsage(await usageRes.json());
+    setProjects(await projectsRes.json());
   }, []);
 
   useEffect(() => {
@@ -102,6 +114,23 @@ export default function Dashboard() {
     e.stopPropagation();
     if (!confirm(`Delete "${filename}"?`)) return;
     await fetch(`/api/files/${fileId}`, { method: "DELETE" });
+    loadData();
+  }
+
+  async function createProject() {
+    if (!newProjectName.trim()) return;
+    await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newProjectName }),
+    });
+    setNewProjectName("");
+    loadData();
+  }
+
+  async function deleteProject(projectId: string, name: string) {
+    if (!confirm(`Delete project "${name}"? Files won't be deleted.`)) return;
+    await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
     loadData();
   }
 
@@ -180,6 +209,42 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Projects */}
+      <div className="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 className="font-semibold mb-3">Projects</h2>
+        {projects.length > 0 && (
+          <div className="space-y-2 mb-3">
+            {projects.map(p => (
+              <div key={p.id}
+                className="flex items-center justify-between p-3 border rounded hover:bg-gray-50 cursor-pointer"
+                onClick={() => router.push(`/projects/${p.id}`)}>
+                <div>
+                  <span className="font-medium">{p.name}</span>
+                  <span className="text-sm text-gray-400 mr-2">
+                    {" "}({p._count.files} files, {p._count.approvedTexts} lines)
+                  </span>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteProject(p.id, p.name); }}
+                  className="text-red-400 hover:text-red-600 text-sm px-1" title="Delete project">
+                  &#10005;
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input type="text" placeholder="New project name..."
+            value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && createProject()}
+            className="border rounded px-3 py-1 text-sm flex-1" />
+          <button onClick={createProject}
+            className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">
+            Create Project
+          </button>
+        </div>
+      </div>
 
       {/* Handwriting Profiles */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
@@ -356,8 +421,9 @@ export default function Dashboard() {
                 <div>
                   <p className="font-medium">{file.filename}</p>
                   <p className="text-sm text-gray-400">
-                    {file.profile?.name || "No profile"} &middot;{" "}
-                    {new Date(file.createdAt).toLocaleDateString()}
+                    {file.profile?.name || "No profile"}
+                    {file.project && <> &middot; <span className="text-blue-500">{file.project.name}</span></>}
+                    {" "}&middot; {new Date(file.createdAt).toLocaleDateString()}
                   </p>
                 </div>
               </div>
@@ -366,6 +432,8 @@ export default function Dashboard() {
                   className={`px-2 py-1 rounded text-xs ${
                     file.status === "completed"
                       ? "bg-green-100 text-green-700"
+                      : file.status === "ready"
+                      ? "bg-blue-100 text-blue-700"
                       : file.status === "processing"
                       ? "bg-yellow-100 text-yellow-700"
                       : "bg-gray-100 text-gray-600"
@@ -373,6 +441,28 @@ export default function Dashboard() {
                 >
                   {file.status}
                 </span>
+                {(file.status === "ready" || file.status === "completed") && (
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const newStatus = file.status === "completed" ? "ready" : "completed";
+                      await fetch(`/api/files/${file.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: newStatus }),
+                      });
+                      setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: newStatus } : f));
+                    }}
+                    className={`px-2 py-1 rounded text-xs ${
+                      file.status === "completed"
+                        ? "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                        : "bg-green-100 text-green-700 hover:bg-green-200"
+                    }`}
+                    title={file.status === "completed" ? "Mark as not complete" : "Mark as complete"}
+                  >
+                    {file.status === "completed" ? "Undo" : "Complete"}
+                  </button>
+                )}
                 <button
                   onClick={(e) => deleteFile(file.id, file.filename, e)}
                   className="text-red-400 hover:text-red-600 text-sm px-1"

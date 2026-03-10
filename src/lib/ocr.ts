@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { getAllTalmudicWords, getTalmudicWordFreqs, getBigramMap, PUNCT_EQUIVALENCES } from "./talmudic-dictionary";
 
 interface OCRWordResult {
   text: string;
@@ -169,72 +170,115 @@ function splitAtValleys(
 
 export async function detectSkew(imageBuffer: Buffer): Promise<number> {
   const sharp = (await import("sharp")).default;
+
+  // Downscale for speed — 600px wide is enough for skew detection
+  const meta = await sharp(imageBuffer).metadata();
+  const scale = Math.min(1, 600 / (meta.width || 600));
   const { data, info } = await sharp(imageBuffer)
+    .resize(Math.round((meta.width || 600) * scale))
     .greyscale()
+    .normalize()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
   const { width, height } = info;
-  const darkThreshold = 160;
 
-  const rowDensity: number[] = [];
+  // Binarize: compute Otsu-like threshold
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < data.length; i++) hist[data[i]]++;
+  const total = data.length; let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, maxVar = 0, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const variance = wB * wF * (mB - mF) * (mB - mF);
+    if (variance > maxVar) { maxVar = variance; threshold = t; }
+  }
+
+  // Build binary row projection (count dark pixels per row)
+  const rowCounts = new Float64Array(height);
   for (let y = 0; y < height; y++) {
-    let dark = 0;
+    let count = 0;
     for (let x = 0; x < width; x++) {
-      if (data[y * width + x] < darkThreshold) dark++;
+      if (data[y * width + x] < threshold) count++;
     }
-    rowDensity.push(dark / width);
+    rowCounts[y] = count;
   }
 
-  const lineRegions: { yTop: number; yBottom: number }[] = [];
-  let inText = false;
-  let start = 0;
-  for (let y = 0; y < height; y++) {
-    if (rowDensity[y] > 0.015 && !inText) { start = y; inText = true; }
-    else if (rowDensity[y] <= 0.015 && inText) {
-      if (y - start > 15) lineRegions.push({ yTop: start, yBottom: y });
-      inText = false;
-    }
-  }
-  if (inText && height - start > 15) lineRegions.push({ yTop: start, yBottom: height });
+  // Projection profile variance method:
+  // For each candidate angle, "rotate" the row projection and measure variance.
+  // The angle with maximum variance = text lines are most horizontal.
+  // We simulate rotation by shifting each column's contribution.
+  const angleStep = 0.1;
+  const maxAngle = 5; // search +/- 5 degrees
+  let bestAngle = 0;
+  let bestVariance = -1;
 
-  if (lineRegions.length < 1) return 0;
+  for (let angle = -maxAngle; angle <= maxAngle; angle += angleStep) {
+    const rad = angle * Math.PI / 180;
+    const tanA = Math.tan(rad);
 
-  const angles: number[] = [];
-  const leftBound = Math.floor(width * 0.05);
-  const leftEnd = Math.floor(width * 0.35);
-  const rightStart = Math.floor(width * 0.65);
-  const rightEnd = Math.floor(width * 0.95);
-
-  for (const region of lineRegions) {
-    let leftWeightedY = 0, leftCount = 0;
-    let rightWeightedY = 0, rightCount = 0;
-
-    for (let y = region.yTop; y < region.yBottom; y++) {
-      for (let x = leftBound; x < leftEnd; x++) {
-        if (data[y * width + x] < darkThreshold) { leftWeightedY += y; leftCount++; }
-      }
-      for (let x = rightStart; x < rightEnd; x++) {
-        if (data[y * width + x] < darkThreshold) { rightWeightedY += y; rightCount++; }
+    // Build shifted row projection
+    const proj = new Float64Array(height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (data[y * width + x] < threshold) {
+          const newY = Math.round(y - x * tanA);
+          if (newY >= 0 && newY < height) proj[newY]++;
+        }
       }
     }
 
-    if (leftCount < 5 || rightCount < 5) continue;
+    // Compute variance of projection
+    let mean = 0;
+    for (let y = 0; y < height; y++) mean += proj[y];
+    mean /= height;
+    let variance = 0;
+    for (let y = 0; y < height; y++) variance += (proj[y] - mean) * (proj[y] - mean);
 
-    const leftCenterY = leftWeightedY / leftCount;
-    const rightCenterY = rightWeightedY / rightCount;
-    const leftCenterX = (leftBound + leftEnd) / 2;
-    const rightCenterX = (rightStart + rightEnd) / 2;
-
-    const angle = Math.atan2(rightCenterY - leftCenterY, rightCenterX - leftCenterX) * (180 / Math.PI);
-    angles.push(angle);
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      bestAngle = angle;
+    }
   }
 
-  if (angles.length === 0) return 0;
-  angles.sort((a, b) => a - b);
-  const median = angles[Math.floor(angles.length / 2)];
-  if (Math.abs(median) > 10) return 0;
-  return Math.round(median * 100) / 100;
+  // Refine with finer step around the best angle
+  const fineStart = bestAngle - angleStep;
+  const fineEnd = bestAngle + angleStep;
+  for (let angle = fineStart; angle <= fineEnd; angle += 0.02) {
+    const rad = angle * Math.PI / 180;
+    const tanA = Math.tan(rad);
+
+    const proj = new Float64Array(height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (data[y * width + x] < threshold) {
+          const newY = Math.round(y - x * tanA);
+          if (newY >= 0 && newY < height) proj[newY]++;
+        }
+      }
+    }
+
+    let mean = 0;
+    for (let y = 0; y < height; y++) mean += proj[y];
+    mean /= height;
+    let variance = 0;
+    for (let y = 0; y < height; y++) variance += (proj[y] - mean) * (proj[y] - mean);
+
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      bestAngle = angle;
+    }
+  }
+
+  if (Math.abs(bestAngle) > 10) return 0;
+  return Math.round(bestAngle * 100) / 100;
 }
 
 // ─── Azure Document Intelligence OCR ─────────────────────
@@ -421,41 +465,94 @@ async function buildCorrectionDictionary(profileId?: string): Promise<Map<string
   return dict;
 }
 
+// Normalize punctuation for comparison (geresh/gershayim variants)
+function normalizePunct(text: string): string {
+  let t = text;
+  for (const [a, b] of PUNCT_EQUIVALENCES) {
+    t = t.replaceAll(a, b);
+  }
+  return t;
+}
+
 function correctWithDictionary(
   words: OCRWordResult[],
   dict: Map<string, number>,
   confidenceThreshold: number = 0.85,
   maxEditDist: number = 2,
 ): OCRWordResult[] {
-  if (dict.size === 0) return words;
+  const talmudicWords = getAllTalmudicWords();
+  const talmudicFreqs = getTalmudicWordFreqs();
+  const bigrams = getBigramMap();
+  const hasDicts = dict.size > 0 || talmudicWords.size > 0;
+  if (!hasDicts) return words;
 
-  return words.map((word) => {
+  return words.map((word, idx) => {
     const text = word.text.trim();
     if (!text || text.length <= 1) return word;
-    // Skip if already in dictionary (exact match)
-    if (dict.has(text)) return word;
-    // Only correct low-confidence words
+
+    const normalized = normalizePunct(text);
+
+    // Skip if exact match in user dict or talmudic dict
+    if (dict.has(text) || dict.has(normalized)) return word;
+    if (talmudicWords.has(text) || talmudicWords.has(normalized)) return word;
+
+    // Only correct low-confidence words (or all words for TrOCR which has no confidence)
     if (word.confidence !== undefined && word.confidence >= confidenceThreshold) return word;
 
-    // Find closest dictionary match
+    // Find closest match across both dictionaries
     let bestMatch = "";
     let bestDist = Infinity;
-    let bestFreq = 0;
+    let bestScore = -Infinity; // Combined score: frequency + context bonus
     const maxDist = Math.min(maxEditDist, Math.floor(text.length * 0.4));
 
-    dict.forEach((freq, dictWord) => {
-      // Quick length filter
-      if (Math.abs(dictWord.length - text.length) > maxDist) return;
-      const dist = editDistance(text, dictWord);
-      if (dist < bestDist || (dist === bestDist && freq > bestFreq)) {
-        bestDist = dist;
-        bestMatch = dictWord;
-        bestFreq = freq;
+    // Get context: previous and next words for bigram matching
+    const prevWord = idx > 0 ? words[idx - 1].text.trim() : "";
+    const nextWord = idx < words.length - 1 ? words[idx + 1].text.trim() : "";
+
+    function scoreCandidate(candidate: string, dist: number, freq: number) {
+      if (dist > maxDist) return;
+      // Base score from frequency (log scale)
+      let score = Math.log2(freq + 1) * 10;
+      // Bigram bonus: if previous word predicts this candidate
+      if (prevWord && bigrams.has(prevWord)) {
+        const followers = bigrams.get(prevWord)!;
+        if (followers.has(candidate)) score += 50;
       }
+      // Bigram bonus: if this candidate predicts the next word
+      if (nextWord && bigrams.has(candidate)) {
+        const followers = bigrams.get(candidate)!;
+        if (followers.has(nextWord)) score += 30;
+      }
+      // Talmudic vocab bonus (known word)
+      if (talmudicWords.has(candidate)) score += 20;
+      // Prefer smaller edit distance
+      score -= dist * 15;
+
+      if (dist < bestDist || (dist === bestDist && score > bestScore)) {
+        bestDist = dist;
+        bestMatch = candidate;
+        bestScore = score;
+      }
+    }
+
+    // Search user training dictionary
+    dict.forEach((freq, dictWord) => {
+      if (Math.abs(dictWord.length - text.length) > maxDist) return;
+      const dist = editDistance(normalized, normalizePunct(dictWord));
+      scoreCandidate(dictWord, dist, freq);
+    });
+
+    // Search talmudic dictionary (with real Sefaria frequencies)
+    talmudicFreqs.forEach((freq, tWord) => {
+      if (Math.abs(tWord.length - text.length) > maxDist) return;
+      if (dict.has(tWord)) return; // Already checked above
+      const dist = editDistance(normalized, normalizePunct(tWord));
+      scoreCandidate(tWord, dist, freq);
     });
 
     if (bestDist > 0 && bestDist <= maxDist && bestMatch) {
-      console.log(`[OCR-Dict] "${text}" -> "${bestMatch}" (dist=${bestDist}, freq=${bestFreq}, conf=${word.confidence?.toFixed(2)})`);
+      const source = dict.has(bestMatch) ? "user" : "talmudic";
+      console.log(`[OCR-Dict] "${text}" -> "${bestMatch}" (dist=${bestDist}, score=${bestScore.toFixed(0)}, src=${source}, conf=${word.confidence?.toFixed(2)})`);
       return { ...word, text: bestMatch };
     }
     return word;

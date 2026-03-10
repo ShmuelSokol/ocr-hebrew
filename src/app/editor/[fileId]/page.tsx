@@ -123,6 +123,9 @@ export default function EditorPage() {
   const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [correctionCount, setCorrectionCount] = useState(0);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(null);
+  const [textApproved, setTextApproved] = useState(false);
   const [showRerunBanner, setShowRerunBanner] = useState(false);
   const [trainingMode, setTrainingMode] = useState(false);
   const [detectedLines, setDetectedLines] = useState<DetectedLine[]>([]);
@@ -144,10 +147,24 @@ export default function EditorPage() {
   const [trocrProgress, setTrocrProgress] = useState<{ processed: number; total: number } | null>(null);
   const [textSource, setTextSource] = useState<"azure" | "trocr">("azure");
 
+  // Draw-box-to-add-word state
+  const [drawingLineId, setDrawingLineId] = useState<string | null>(null);
+  const [drawBoxStart, setDrawBoxStart] = useState<{ x: number; y: number } | null>(null);
+  const [drawBoxCurrent, setDrawBoxCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [drawnBox, setDrawnBox] = useState<{ lineId: string; xLeft: number; xRight: number; yTop: number; yBottom: number } | null>(null);
+  const [drawBoxText, setDrawBoxText] = useState("");
+  const [drawBoxSaving, setDrawBoxSaving] = useState(false);
+  const drawBoxInputRef = useRef<HTMLInputElement>(null);
+
+  // Undo toast for word deletion
+  const [pendingDelete, setPendingDelete] = useState<{ wordId: string; timer: NodeJS.Timeout } | null>(null);
+  const [deletedWordIds, setDeletedWordIds] = useState<Set<string>>(new Set());
+
   const imageRef = useRef<HTMLImageElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const ocrStartRef = useRef<number>(0);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const reOcrTimerRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   // ─── Data Loading ──────────────────────────────────────
 
@@ -165,6 +182,9 @@ export default function EditorPage() {
       setFileStatus(file.status);
       setProfileId(file.profileId || null);
       setProfileName(file.profile?.name || null);
+      setProjectId(file.projectId || null);
+      setProjectName(file.project?.name || null);
+      setTextApproved(file.textApproved || false);
     }
     if (resultData?.id) {
       setResult(resultData);
@@ -241,6 +261,16 @@ export default function EditorPage() {
       for (const line of toConfirm) fetch(`/api/lines/${line.id}/save-training`, { method: "POST" }).catch(() => {});
     }
     await loadResult();
+  }
+
+  async function approveTextToProject() {
+    if (!projectId) return;
+    await fetch(`/api/projects/${projectId}/text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileId }),
+    });
+    setTextApproved(true);
   }
 
   function buildFewShotLines() {
@@ -352,16 +382,6 @@ export default function EditorPage() {
     });
   }
 
-  async function confirmAllWordsCorrect() {
-    if (!result) return;
-    const uncorrectedWords = result.lines
-      .flatMap(l => l.words)
-      .filter(w => !w.correctedText && w.xLeft != null && !confirmedWords.has(w.id));
-    for (const w of uncorrectedWords) {
-      confirmWordCorrect(w.id);
-    }
-  }
-
   // Save current word and move to next
   async function saveAndNext(wordId: string, corrected: string) {
     await saveWord(wordId, corrected);
@@ -409,6 +429,9 @@ export default function EditorPage() {
       setFileStatus(file.status);
       setProfileId(file.profileId || null);
       setProfileName(file.profile?.name || null);
+      setProjectId(file.projectId || null);
+      setProjectName(file.project?.name || null);
+      setTextApproved(file.textApproved || false);
     }
     if (resultData?.id) {
       setResult(resultData);
@@ -441,10 +464,42 @@ export default function EditorPage() {
     }
   }
 
-  async function deleteWord(wordId: string) {
-    if (!confirm("Delete this word?")) return;
-    await fetch(`/api/words/${wordId}`, { method: "DELETE" });
-    await loadResultKeepScroll();
+  function deleteWord(wordId: string) {
+    // Cancel any existing pending delete
+    if (pendingDelete) {
+      clearTimeout(pendingDelete.timer);
+      // Execute the previous pending delete immediately
+      fetch(`/api/words/${pendingDelete.wordId}`, { method: "DELETE" });
+    }
+
+    // Hide the word visually and deselect if it was selected
+    setDeletedWordIds(prev => new Set(prev).add(wordId));
+    if (editingWord === wordId) setEditingWord(null);
+
+    // Set timer — actually delete after 5 seconds
+    const timer = setTimeout(async () => {
+      await fetch(`/api/words/${wordId}`, { method: "DELETE" });
+      setPendingDelete(null);
+      setDeletedWordIds(prev => {
+        const next = new Set(prev);
+        next.delete(wordId);
+        return next;
+      });
+      await loadResultKeepScroll();
+    }, 5000);
+
+    setPendingDelete({ wordId, timer });
+  }
+
+  function undoDelete() {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timer);
+    setDeletedWordIds(prev => {
+      const next = new Set(prev);
+      next.delete(pendingDelete.wordId);
+      return next;
+    });
+    setPendingDelete(null);
   }
 
   async function addWord(lineId: string, afterWordIndex: number, text: string) {
@@ -456,6 +511,64 @@ export default function EditorPage() {
     });
     setAddingWordLineId(null);
     setAddWordValue("");
+    await loadResultKeepScroll();
+  }
+
+  async function addWordWithBox() {
+    if (!drawnBox) return;
+    const text = drawBoxText.trim() || "?";
+    setDrawBoxSaving(true);
+    // Find the right afterWordIndex — insert based on x position (RTL: rightmost first)
+    const line = result?.lines.find(l => l.id === drawnBox.lineId);
+    let afterWordIndex = -1;
+    if (line) {
+      // In RTL, words are ordered right-to-left. Find where this box fits by xRight.
+      for (let i = 0; i < line.words.length; i++) {
+        const w = line.words[i];
+        if (w.xRight != null && w.xRight > drawnBox.xRight) {
+          afterWordIndex = w.wordIndex;
+        }
+      }
+    }
+    const res = await fetch(`/api/lines/${drawnBox.lineId}/words`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        afterWordIndex,
+        xLeft: drawnBox.xLeft,
+        xRight: drawnBox.xRight,
+        yTop: drawnBox.yTop,
+        yBottom: drawnBox.yBottom,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      // Auto-run TrOCR on the new word
+      if (data.word?.id) {
+        fetch(`/api/words/${data.word.id}`, { method: "POST" }).then(async (r) => {
+          if (r.ok) {
+            const d = await r.json();
+            setResult(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                lines: prev.lines.map(l => ({
+                  ...l,
+                  words: l.words.map(w =>
+                    w.id === data.word.id ? { ...w, rawText: d.text || w.rawText, modelText: d.text || null } : w
+                  ),
+                })),
+              };
+            });
+          }
+        }).catch(() => {});
+      }
+    }
+    setDrawnBox(null);
+    setDrawBoxText("");
+    setDrawingLineId(null);
+    setDrawBoxSaving(false);
     await loadResultKeepScroll();
   }
 
@@ -514,6 +627,33 @@ export default function EditorPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ xLeft: newLeft, xRight: newRight, yTop: newTop, yBottom: newBottom }),
     });
+
+    // Debounced auto re-OCR: wait 800ms after last adjustment, then re-recognize the word
+    if (reOcrTimerRef.current[wordId]) clearTimeout(reOcrTimerRef.current[wordId]);
+    reOcrTimerRef.current[wordId] = setTimeout(async () => {
+      delete reOcrTimerRef.current[wordId];
+      try {
+        const res = await fetch(`/api/words/${wordId}`, { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          // Update the word text in local state
+          setResult(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              lines: prev.lines.map(l => ({
+                ...l,
+                words: l.words.map(w =>
+                  w.id === wordId ? { ...w, rawText: data.text || w.rawText, modelText: data.text || null, correctedText: null } : w
+                ),
+              })),
+            };
+          });
+        }
+      } catch {
+        // TrOCR server unavailable — skip silently
+      }
+    }, 800);
   }
 
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
@@ -702,14 +842,139 @@ export default function EditorPage() {
 
           return (
             <div key={line.id} className="border-b border-gray-200">
-              {/* Line image crop */}
+              {/* Line image crop with bounding box overlay */}
               <div className="px-2 pt-2">
-                <LineCropCanvas imgEl={imgEl} line={line} maxHeight={120} key={`lc-${line.id}-${imageVersion}`} />
+                <div
+                  className={`relative ${drawingLineId === line.id ? "cursor-crosshair ring-2 ring-green-400 rounded" : ""}`}
+                  onPointerDown={(e) => {
+                    if (drawingLineId !== line.id || !imgEl) return;
+                    e.preventDefault();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const scaleX = imgEl.naturalWidth / rect.width;
+                    const scaleY = (line.yBottom - line.yTop) / rect.height;
+                    const x = (e.clientX - rect.left) * scaleX;
+                    const y = (e.clientY - rect.top) * scaleY + line.yTop;
+                    setDrawBoxStart({ x, y });
+                    setDrawBoxCurrent({ x, y });
+                    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                  }}
+                  onPointerMove={(e) => {
+                    if (!drawBoxStart || drawingLineId !== line.id || !imgEl) return;
+                    e.preventDefault();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const scaleX = imgEl.naturalWidth / rect.width;
+                    const scaleY = (line.yBottom - line.yTop) / rect.height;
+                    const x = (e.clientX - rect.left) * scaleX;
+                    const y = (e.clientY - rect.top) * scaleY + line.yTop;
+                    setDrawBoxCurrent({ x, y });
+                  }}
+                  onPointerUp={(e) => {
+                    if (!drawBoxStart || !drawBoxCurrent || drawingLineId !== line.id) return;
+                    e.preventDefault();
+                    const xLeft = Math.round(Math.min(drawBoxStart.x, drawBoxCurrent.x));
+                    const xRight = Math.round(Math.max(drawBoxStart.x, drawBoxCurrent.x));
+                    const yTop = Math.round(Math.min(drawBoxStart.y, drawBoxCurrent.y));
+                    const yBottom = Math.round(Math.max(drawBoxStart.y, drawBoxCurrent.y));
+                    if (xRight - xLeft > 10 && yBottom - yTop > 10) {
+                      setDrawnBox({ lineId: line.id, xLeft, xRight, yTop, yBottom });
+                      setDrawBoxText("");
+                      setTimeout(() => drawBoxInputRef.current?.focus(), 50);
+                    }
+                    setDrawBoxStart(null);
+                    setDrawBoxCurrent(null);
+                  }}
+                >
+                  <LineCropCanvas imgEl={imgEl} line={line} maxHeight={120} key={`lc-${line.id}-${imageVersion}`} />
+                  {imgEl && imgEl.naturalWidth > 0 && (
+                    <svg
+                      className="absolute top-0 left-0 w-full h-full"
+                      viewBox={`0 0 ${imgEl.naturalWidth} ${line.yBottom - line.yTop}`}
+                      preserveAspectRatio="none"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {line.words.filter(w => !deletedWordIds.has(w.id)).map((w) => {
+                        if (w.xLeft == null || w.xRight == null) return null;
+                        const wTop = (w.yTop ?? line.yTop) - line.yTop;
+                        const wBottom = (w.yBottom ?? line.yBottom) - line.yTop;
+                        const isSelected = editingWord === w.id;
+                        const isCorrected = w.correctedText && w.correctedText !== w.rawText;
+                        const isConfirmed = confirmedWords.has(w.id);
+                        return (
+                          <rect
+                            key={w.id}
+                            x={w.xLeft}
+                            y={wTop}
+                            width={w.xRight - w.xLeft}
+                            height={wBottom - wTop}
+                            fill={isSelected ? "rgba(249, 115, 22, 0.15)" : "transparent"}
+                            stroke={
+                              isSelected ? "rgba(249, 115, 22, 0.8)" :
+                              isCorrected ? "rgba(34, 197, 94, 0.5)" :
+                              isConfirmed ? "rgba(59, 130, 246, 0.5)" :
+                              "rgba(59, 130, 246, 0.3)"
+                            }
+                            strokeWidth={Math.max(1, imgEl.naturalWidth / 600)}
+                          />
+                        );
+                      })}
+                      {/* Drawing preview rectangle */}
+                      {drawingLineId === line.id && drawBoxStart && drawBoxCurrent && (
+                        <rect
+                          x={Math.min(drawBoxStart.x, drawBoxCurrent.x)}
+                          y={Math.min(drawBoxStart.y, drawBoxCurrent.y) - line.yTop}
+                          width={Math.abs(drawBoxCurrent.x - drawBoxStart.x)}
+                          height={Math.abs(drawBoxCurrent.y - drawBoxStart.y)}
+                          fill="rgba(34, 197, 94, 0.2)"
+                          stroke="rgba(34, 197, 94, 0.8)"
+                          strokeWidth={Math.max(2, imgEl.naturalWidth / 400)}
+                          strokeDasharray="8 4"
+                        />
+                      )}
+                      {/* Drawn box (pending text input) */}
+                      {drawnBox && drawnBox.lineId === line.id && (
+                        <rect
+                          x={drawnBox.xLeft}
+                          y={drawnBox.yTop - line.yTop}
+                          width={drawnBox.xRight - drawnBox.xLeft}
+                          height={drawnBox.yBottom - drawnBox.yTop}
+                          fill="rgba(34, 197, 94, 0.25)"
+                          stroke="rgba(34, 197, 94, 1)"
+                          strokeWidth={Math.max(2, imgEl.naturalWidth / 400)}
+                        />
+                      )}
+                    </svg>
+                  )}
+                </div>
+                {/* Drawn box text input */}
+                {drawnBox && drawnBox.lineId === line.id && (
+                  <div className="flex items-center gap-2 mt-1 px-1">
+                    <input
+                      ref={drawBoxInputRef}
+                      type="text"
+                      dir="rtl"
+                      value={drawBoxText}
+                      onChange={(e) => setDrawBoxText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addWordWithBox();
+                        if (e.key === "Escape") { setDrawnBox(null); setDrawBoxText(""); }
+                      }}
+                      className="border-2 border-green-500 rounded px-2 py-1 text-sm text-right bg-white flex-1"
+                      placeholder="enter text (or leave blank for auto-OCR)..."
+                      disabled={drawBoxSaving}
+                    />
+                    <button onClick={addWordWithBox} disabled={drawBoxSaving}
+                      className="bg-green-500 text-white px-3 py-1 rounded text-sm font-medium hover:bg-green-600 disabled:opacity-50">
+                      {drawBoxSaving ? "..." : "Add"}
+                    </button>
+                    <button onClick={() => { setDrawnBox(null); setDrawBoxText(""); }}
+                      className="text-gray-400 hover:text-gray-600 text-sm px-1">Cancel</button>
+                  </div>
+                )}
               </div>
 
               {/* Word text row — RTL */}
               <div className="flex flex-wrap items-start gap-1 px-2 py-2" dir="rtl">
-                {/* Line number + confirm */}
+                {/* Line number + confirm + draw box */}
                 <div className="flex flex-col items-center justify-center shrink-0 w-6 pt-1">
                   <span className="text-[10px] text-gray-400">{line.lineIndex + 1}</span>
                   {!allConfirmed ? (
@@ -719,11 +984,28 @@ export default function EditorPage() {
                     <button onClick={() => unconfirmLine(line.id)}
                       className="text-[10px] text-green-600 hover:text-red-500 mt-1" title="Unconfirm">&#10003;</button>
                   )}
+                  <button
+                    onClick={() => {
+                      if (drawingLineId === line.id) {
+                        setDrawingLineId(null);
+                        setDrawnBox(null);
+                        setDrawBoxStart(null);
+                        setDrawBoxCurrent(null);
+                      } else {
+                        setDrawingLineId(line.id);
+                        setDrawnBox(null);
+                      }
+                    }}
+                    className={`text-[10px] mt-0.5 ${drawingLineId === line.id ? "text-green-600 font-bold" : "text-gray-400 hover:text-green-500"}`}
+                    title={drawingLineId === line.id ? "Cancel drawing" : "Draw bounding box to add word"}
+                  >
+                    {drawingLineId === line.id ? "&#9744;" : "&#9634;"}
+                  </button>
                 </div>
 
                 {renderAddBtn(line.id, -1)}
 
-                {line.words.map((word) => {
+                {line.words.filter(w => !deletedWordIds.has(w.id)).map((word) => {
                   const isCorrected = word.correctedText && word.correctedText !== word.rawText;
                   const isConfirmed = confirmedWords.has(word.id);
                   const isSelected = editingWord === word.id;
@@ -927,25 +1209,62 @@ export default function EditorPage() {
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           <button onClick={() => router.push("/dashboard")} className="text-blue-600 hover:underline text-sm shrink-0">&larr;</button>
           <h1 className="text-base sm:text-xl font-bold truncate">{filename}</h1>
-          <span className={`px-2 py-0.5 rounded text-xs shrink-0 ${fileStatus === "completed" ? "bg-green-100 text-green-700" : fileStatus === "processing" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{fileStatus}</span>
+          <span className={`px-2 py-0.5 rounded text-xs shrink-0 ${fileStatus === "completed" ? "bg-green-100 text-green-700" : fileStatus === "ready" ? "bg-blue-100 text-blue-700" : fileStatus === "processing" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{fileStatus}</span>
         </div>
         <div className="flex gap-2 flex-wrap">
           {result && (
             <>
               {!reviewMode && <button onClick={startReview} className="bg-purple-500 text-white px-3 py-1.5 rounded text-sm hover:bg-purple-600">Review Words</button>}
               {reviewMode && <button onClick={() => setReviewMode(false)} className="bg-gray-500 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-600">Exit Review</button>}
-              <button onClick={confirmAllLines} className="bg-green-500 text-white px-3 py-1.5 rounded text-sm hover:bg-green-600">Confirm All</button>
-              {profileId && <button onClick={confirmAllWordsCorrect} className="bg-blue-500 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-600">Save All Correct</button>}
+              {fileStatus === "completed" ? (
+                <button onClick={async () => {
+                  await fetch(`/api/files/${fileId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) });
+                  setFileStatus("ready");
+                }} className="px-3 py-1.5 rounded text-sm bg-gray-400 text-white hover:bg-gray-500">
+                  Undo Complete
+                </button>
+              ) : (
+                <>
+                  <button onClick={async () => {
+                    if (result) {
+                      await confirmAllLines();
+                      // Batch-create training examples — downloads image once, crops all words
+                      if (profileId) {
+                        await fetch(`/api/files/${fileId}/confirm-all-training`, { method: "POST" });
+                      }
+                    }
+                    await fetch(`/api/files/${fileId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "completed" }) });
+                    setFileStatus("completed");
+                  }} className="px-3 py-1.5 rounded text-sm bg-green-600 text-white hover:bg-green-700 border-2 border-green-700">
+                    Complete + Train
+                  </button>
+                  <button onClick={async () => {
+                    await fetch(`/api/files/${fileId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "completed" }) });
+                    setFileStatus("completed");
+                  }} className="px-3 py-1.5 rounded text-sm bg-gray-200 text-gray-600 hover:bg-gray-300">
+                    Complete Only
+                  </button>
+                </>
+              )}
               <button onClick={() => window.open(`/api/files/${fileId}/export?format=txt`, "_blank")} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700">Export</button>
+              {projectId && (
+                <button onClick={approveTextToProject}
+                  className={`px-3 py-1.5 rounded text-sm ${textApproved ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}>
+                  {textApproved ? "Re-approve to Project" : "Approve to Project"}
+                </button>
+              )}
             </>
           )}
         </div>
       </div>
 
-      {/* Profile info */}
-      {profileName && (
+      {/* Project & Profile info */}
+      {(profileName || projectName) && (
         <div className="mb-4 flex items-center gap-3 text-sm flex-wrap">
-          <span className="text-gray-500">Profile: <strong>{profileName}</strong></span>
+          {projectName && (
+            <span className="text-gray-500">Project: <button onClick={() => router.push(`/projects/${projectId}`)} className="font-semibold text-blue-600 hover:underline">{projectName}</button></span>
+          )}
+          {profileName && <span className="text-gray-500">Profile: <strong>{profileName}</strong></span>}
           <button onClick={() => { if (showTrainingExamples) setShowTrainingExamples(false); else loadTrainingExamples(); }}
             className={`px-2 py-1 rounded text-xs font-medium ${showTrainingExamples ? "bg-purple-500 text-white" : "bg-purple-100 hover:bg-purple-200 text-purple-700"}`}>
             {showTrainingExamples ? "Hide Training" : `Training Examples (${trainingExamples.length || "?"})`}
@@ -1058,7 +1377,17 @@ export default function EditorPage() {
                 onImageRefresh={() => {
                   const bust = Date.now();
                   setImageCacheBust(bust);
-                  if (imageRef.current) imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
+                  if (imageRef.current) {
+                    imageRef.current.src = `/api/files/${fileId}/image?t=${bust}`;
+                    // Re-read dimensions once the new image loads
+                    imageRef.current.onload = () => {
+                      if (imageRef.current) {
+                        setImageNaturalWidth(imageRef.current.naturalWidth);
+                        setImageNaturalHeight(imageRef.current.naturalHeight);
+                        setImageVersion((v) => v + 1);
+                      }
+                    };
+                  }
                 }}
                 onComplete={async () => {
                   setTrainingMode(false);
@@ -1292,6 +1621,17 @@ export default function EditorPage() {
           </div>
         );
       })()}
+
+      {/* Undo delete toast */}
+      {pendingDelete && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] bg-gray-900 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 animate-in slide-in-from-bottom">
+          <span className="text-sm">Word deleted</span>
+          <button onClick={undoDelete}
+            className="bg-white text-gray-900 px-3 py-1 rounded text-sm font-medium hover:bg-gray-100">
+            Undo
+          </button>
+        </div>
+      )}
     </div>
   );
 }
