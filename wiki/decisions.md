@@ -6,6 +6,24 @@ Newest at the top.
 
 ---
 
+## 2026-04-19 — Supabase DB wipe: add guards, plan per-app project split
+
+**What happened**: the shared Supabase project `ushngszdltlctmqlwgot` lost all OCR Hebrew tables in the `public` schema. Every DB-backed API endpoint was returning P2021 errors silently. User's raw images in Supabase Storage and local training backup survived; relational metadata did not.
+
+**Guards added immediately**:
+- Removed `prisma db push` from Docker CMD (was: silent schema push on every deploy)
+- `npm run db:push:prod` now refuses if DB has data unless `CONFIRM_SCHEMA_CHANGE=yes`
+- `/api/health` checks that required tables exist, returns 503 if missing
+- `scripts/db-backup.js` for nightly JSON dumps (30-day rotation)
+
+**Planned (needs user action)**: migrate OCR Hebrew to its own dedicated Supabase project. No more shared DB with 3rdBHMK + 3D Images.
+
+**Would reverse if**: Supabase adds per-app isolation primitives (schemas with enforced RLS) that make shared projects safe. Unlikely near-term.
+
+See: [safety.md](safety.md)
+
+---
+
 ## 2026-04-19 — Pool training data across users, fine-tune per user on top
 
 **Decided**: one shared pooled base model trained on all users' corrections; per-user fine-tune forks on top for customers who need >85% accuracy.

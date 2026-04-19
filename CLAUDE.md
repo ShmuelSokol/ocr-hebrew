@@ -216,6 +216,15 @@ Available skills in `.claude/skills/`:
 
 Product strategy, pricing, offline-product spec, model strategy, data-quality notes, roadmap, and decision log live in `wiki/`. Start at `wiki/index.md`. Update proactively when strategy or architecture changes.
 
+## DANGER — DB safety (post-2026-04-19 wipe)
+
+- **NEVER run `prisma db push` with the prod `DATABASE_URL`** without going through `npm run db:push:prod` (guarded; refuses if DB has data unless `CONFIRM_SCHEMA_CHANGE=yes`).
+- **Docker CMD does NOT auto-run db push** anymore. Schema changes are manual, deliberate.
+- **Supabase project `ushngszdltlctmqlwgot` is shared with 3rdBHMK and 3D Images** — a known risk. Plan: move OCR Hebrew to its own project.
+- **Nightly backup**: `npm run db:backup` → `backups/db-YYYY-MM-DD.json`, 30-day rotation. Schedule via cron on the Mac Mini.
+- **Health check** at `/api/health` now returns 503 `schema-missing` if required tables disappear. Railway monitors this.
+- Full context and runbook: `wiki/safety.md`.
+
 ## Infrastructure IDs
 - Railway project: `9cb5b562-6854-464d-b4b7-fd9ba8b041d4`
 - Railway service: `49600374-a47c-4ada-8fc6-095b683c54d4`

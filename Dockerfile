@@ -39,4 +39,7 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["sh", "-c", "node node_modules/prisma/build/index.js db push --skip-generate && node server.js"]
+# NOTE: prisma db push is intentionally NOT run here. Running it on every
+# boot is dangerous — a divergent schema.prisma can silently drop tables.
+# Apply schema changes deliberately via `npm run db:push:prod` locally.
+CMD ["node", "server.js"]
