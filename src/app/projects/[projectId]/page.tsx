@@ -37,6 +37,7 @@ export default function ProjectPage() {
   const [allFiles, setAllFiles] = useState<FileRecord[]>([]);
   const [showAddFiles, setShowAddFiles] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>("");
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
@@ -88,16 +89,40 @@ export default function ProjectPage() {
     if (!fileList?.length) return;
     setUploading(true);
 
-    for (let i = 0; i < fileList.length; i++) {
-      const form = new FormData();
-      form.append("file", fileList[i]);
-      form.append("projectId", projectId);
-      await fetch("/api/files", { method: "POST", body: form });
-    }
+    try {
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+        const form = new FormData();
+        form.append("file", f);
+        form.append("projectId", projectId);
 
-    setUploading(false);
-    loadProject();
-    e.target.value = "";
+        if (isPdf) {
+          setUploadStatus(`Splitting "${f.name}" into pages (this may take a minute)...`);
+          const res = await fetch("/api/files/pdf", { method: "POST", body: form });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Upload failed" }));
+            alert(`PDF upload failed: ${err.error || res.statusText}`);
+            break;
+          }
+          const body = await res.json();
+          setUploadStatus(`Imported ${body.pages} pages from "${f.name}"`);
+        } else {
+          setUploadStatus(`Uploading ${i + 1} of ${fileList.length}: ${f.name}`);
+          const res = await fetch("/api/files", { method: "POST", body: form });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Upload failed" }));
+            alert(`Upload failed: ${err.error || res.statusText}`);
+            break;
+          }
+        }
+      }
+    } finally {
+      setUploading(false);
+      setUploadStatus("");
+      loadProject();
+      e.target.value = "";
+    }
   }
 
   async function approveFile(fileId: string) {
@@ -161,7 +186,7 @@ export default function ProjectPage() {
           <div className="flex gap-2">
             <label className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm cursor-pointer hover:bg-blue-700">
               Upload
-              <input type="file" accept="image/*" multiple onChange={uploadToProject} className="hidden" disabled={uploading} />
+              <input type="file" accept="image/*,application/pdf,.pdf" multiple onChange={uploadToProject} className="hidden" disabled={uploading} />
             </label>
             <button onClick={() => { setShowAddFiles(!showAddFiles); if (!showAddFiles) loadAllFiles(); }}
               className="bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm hover:bg-gray-300">
@@ -170,7 +195,7 @@ export default function ProjectPage() {
           </div>
         </div>
 
-        {uploading && <p className="text-sm text-gray-500 mb-2">Uploading...</p>}
+        {uploading && <p className="text-sm text-gray-500 mb-2">{uploadStatus || "Uploading..."}</p>}
 
         {/* Add existing files picker */}
         {showAddFiles && (

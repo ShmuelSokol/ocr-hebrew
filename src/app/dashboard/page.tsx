@@ -36,6 +36,8 @@ export default function Dashboard() {
   const [selectedProfile, setSelectedProfile] = useState("");
   const [newProfileName, setNewProfileName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState("");
   const [tab, setTab] = useState<"pending" | "completed">("pending");
   const [usage, setUsage] = useState<{
     totalTokens: number;
@@ -139,16 +141,41 @@ export default function Dashboard() {
     if (!fileList?.length) return;
     setUploading(true);
 
-    for (let i = 0; i < fileList.length; i++) {
-      const form = new FormData();
-      form.append("file", fileList[i]);
-      if (selectedProfile) form.append("profileId", selectedProfile);
-      await fetch("/api/files", { method: "POST", body: form });
-    }
+    try {
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+        const form = new FormData();
+        form.append("file", f);
+        if (selectedProfile) form.append("profileId", selectedProfile);
+        if (selectedProject) form.append("projectId", selectedProject);
 
-    setUploading(false);
-    loadData();
-    e.target.value = "";
+        if (isPdf) {
+          setUploadStatus(`Splitting "${f.name}" into pages (this may take a minute)...`);
+          const res = await fetch("/api/files/pdf", { method: "POST", body: form });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Upload failed" }));
+            alert(`PDF upload failed: ${err.error || res.statusText}`);
+            break;
+          }
+          const body = await res.json();
+          setUploadStatus(`Imported ${body.pages} pages from "${f.name}"`);
+        } else {
+          setUploadStatus(`Uploading ${i + 1} of ${fileList.length}: ${f.name}`);
+          const res = await fetch("/api/files", { method: "POST", body: form });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: "Upload failed" }));
+            alert(`Upload failed: ${err.error || res.statusText}`);
+            break;
+          }
+        }
+      }
+    } finally {
+      setUploading(false);
+      setUploadStatus("");
+      loadData();
+      e.target.value = "";
+    }
   }
 
   const filtered = files.filter((f) =>
@@ -212,8 +239,18 @@ export default function Dashboard() {
 
       {/* Projects */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 className="font-semibold mb-3">Projects</h2>
-        {projects.length > 0 && (
+        <div className="flex items-baseline justify-between mb-1">
+          <h2 className="font-semibold">Projects</h2>
+          <span className="text-xs text-gray-400">{projects.length} total</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          A project groups files from one source (e.g. a book, a manuscript, a single person&apos;s notes).
+        </p>
+        {projects.length === 0 ? (
+          <p className="text-sm text-gray-400 italic mb-3">
+            You don&apos;t have any projects yet. Create one below to group your files.
+          </p>
+        ) : (
           <div className="space-y-2 mb-3">
             {projects.map(p => (
               <div key={p.id}
@@ -248,7 +285,18 @@ export default function Dashboard() {
 
       {/* Handwriting Profiles */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 className="font-semibold mb-3">Handwriting Profiles</h2>
+        <div className="flex items-baseline justify-between mb-1">
+          <h2 className="font-semibold">Handwriting Profiles</h2>
+          <span className="text-xs text-gray-400">{profiles.length} total</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          A profile represents one writer&apos;s handwriting style. Corrections you make here train OCR to recognize that specific writer better over time.
+        </p>
+        {profiles.length === 0 && (
+          <p className="text-sm text-gray-400 italic mb-3">
+            You don&apos;t have any handwriting profiles yet. Create one below so corrections can be saved and used to improve OCR.
+          </p>
+        )}
         <div className="flex gap-2 mb-3 flex-wrap">
           {profiles.map((p) => (
             <div key={p.id} className="flex items-center gap-1">
@@ -356,25 +404,51 @@ export default function Dashboard() {
       {/* Upload */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
         <h2 className="font-semibold mb-3">Upload Files</h2>
+
+        {/* Destination selectors */}
+        <div className="flex flex-wrap gap-3 mb-3">
+          {projects.length > 0 && (
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs text-gray-500 mb-1">Add to project</label>
+              <select value={selectedProject} onChange={e => setSelectedProject(e.target.value)}
+                className="border rounded px-2 py-1 text-sm w-full">
+                <option value="">— Unassigned —</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
+          {profiles.length > 0 && (
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs text-gray-500 mb-1">Handwriting profile</label>
+              <select value={selectedProfile} onChange={e => setSelectedProfile(e.target.value)}
+                className="border rounded px-2 py-1 text-sm w-full">
+                <option value="">— None —</option>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+
         {!selectedProfile && profiles.length > 0 && (
-          <p className="text-amber-600 text-sm mb-2">
-            Select a handwriting profile above for better OCR results
+          <p className="text-amber-600 text-xs mb-2">
+            Select a handwriting profile for better OCR results
           </p>
         )}
+
         <label className="block border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400 transition-colors">
           <input
             type="file"
-            accept="image/*"
+            accept="image/*,application/pdf,.pdf"
             multiple
             onChange={uploadFile}
             className="hidden"
             disabled={uploading}
           />
           {uploading ? (
-            <span className="text-gray-500">Uploading...</span>
+            <span className="text-gray-500">{uploadStatus || "Uploading..."}</span>
           ) : (
             <span className="text-gray-500">
-              Click or drag image files here (JPG, PNG) — multiple files supported
+              Click or drag files here — images (JPG, PNG) or PDF (multi-page supported)
             </span>
           )}
         </label>

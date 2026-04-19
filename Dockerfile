@@ -1,5 +1,5 @@
 FROM node:20-alpine AS base
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl poppler-utils
 
 # Install dependencies
 FROM base AS deps
