@@ -31,6 +31,9 @@ yarn-error.log*
 # uploads
 uploads/
 
+# db backups (nightly JSON dumps, local-only)
+backups/
+
 # vercel
 .vercel
 
