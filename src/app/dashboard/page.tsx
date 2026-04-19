@@ -1,7 +1,8 @@
 "use client";
-import { useSession, signOut } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
+import TopNav from "@/components/TopNav";
 
 interface Profile {
   id: string;
@@ -27,7 +28,7 @@ interface ProjectRecord {
 }
 
 export default function Dashboard() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const router = useRouter();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -83,14 +84,6 @@ export default function Dashboard() {
     loadData();
   }
 
-  async function deleteProfile(profileId: string, name: string) {
-    if (!confirm(`Delete profile "${name}" and all its learned corrections?`)) return;
-    await fetch(`/api/profiles/${profileId}`, { method: "DELETE" });
-    setSelectedProfile("");
-    setShowCorrections(null);
-    loadData();
-  }
-
   async function viewCorrections(profileId: string) {
     if (showCorrections === profileId) {
       setShowCorrections(null);
@@ -127,12 +120,6 @@ export default function Dashboard() {
       body: JSON.stringify({ name: newProjectName }),
     });
     setNewProjectName("");
-    loadData();
-  }
-
-  async function deleteProject(projectId: string, name: string) {
-    if (!confirm(`Delete project "${name}"? Files won't be deleted.`)) return;
-    await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
     loadData();
   }
 
@@ -185,22 +172,9 @@ export default function Dashboard() {
   if (status === "loading") return <div className="p-8">Loading...</div>;
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl font-bold">OCR Hebrew</h1>
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => router.push("/training")}
-            className="text-sm text-blue-600 hover:underline"
-          >
-            Training Data
-          </button>
-          <span className="text-sm text-gray-500">{session?.user?.email}</span>
-          <button onClick={() => signOut()} className="text-sm text-red-500 hover:underline">
-            Sign Out
-          </button>
-        </div>
-      </div>
+    <>
+      <TopNav />
+      <div className="max-w-4xl mx-auto p-6">
 
       {/* Token Usage & Training Stats */}
       {usage && (usage.requestCount > 0 || (usage.trainingExamples ?? 0) > 0) && (
@@ -262,13 +236,10 @@ export default function Dashboard() {
                     {" "}({p._count.files} files, {p._count.approvedTexts} lines)
                   </span>
                 </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); deleteProject(p.id, p.name); }}
-                  className="text-red-400 hover:text-red-600 text-sm px-1" title="Delete project">
-                  &#10005;
-                </button>
+                <span className="text-xs text-gray-300">&rsaquo;</span>
               </div>
             ))}
+            <p className="text-xs text-gray-400 italic">To delete a project, go to <a href="/settings" className="text-blue-600 hover:underline">Settings</a>.</p>
           </div>
         )}
         <div className="flex gap-2">
@@ -297,7 +268,7 @@ export default function Dashboard() {
             You don&apos;t have any handwriting profiles yet. Create one below so corrections can be saved and used to improve OCR.
           </p>
         )}
-        <div className="flex gap-2 mb-3 flex-wrap">
+        <div className="flex gap-2 mb-1 flex-wrap">
           {profiles.map((p) => (
             <div key={p.id} className="flex items-center gap-1">
               <div
@@ -315,23 +286,19 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => viewCorrections(p.id)}
-                className={`px-2 py-1 text-xs border rounded-none ${
+                className={`px-2 py-1 text-xs border rounded-l-none rounded-full ${
                   showCorrections === p.id ? "bg-blue-500 text-white" : "bg-gray-50 hover:bg-gray-100"
                 }`}
                 title="View learned corrections"
               >
                 View
               </button>
-              <button
-                onClick={() => deleteProfile(p.id, p.name)}
-                className="px-2 py-1 text-xs border rounded-l-none rounded-full bg-gray-50 text-red-500 hover:bg-red-50"
-                title="Delete profile"
-              >
-                &#10005;
-              </button>
             </div>
           ))}
         </div>
+        {profiles.length > 0 && (
+          <p className="text-xs text-gray-400 italic mb-3">To delete a profile, go to <a href="/settings" className="text-blue-600 hover:underline">Settings</a>.</p>
+        )}
         <div className="flex gap-2">
           <input
             type="text"
@@ -549,6 +516,7 @@ export default function Dashboard() {
           ))}
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
