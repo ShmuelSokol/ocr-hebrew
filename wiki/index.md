@@ -13,7 +13,9 @@ Short pages. Updated as things change. If a fact here disagrees with the code, t
 ## Engineering
 
 - [Safety & data protection](safety.md) — rules after the 2026-04-19 wipe, backups, health-check, runbook
-- [Supabase project migration](migration/README.md) — plan to isolate each app into its own Supabase project (in flight)
+- [Operations runbook](operations.md) — Mac Mini TrOCR + tunnel, Railway, Supabase, common breakages
+- [Supabase project migration](migration/README.md) — plan to isolate each app into its own Supabase project (resolved)
+- [Tier 2/3/4 roadmap](tier-2-3-4-plan.md) — what's next after Tier 1 commerce
 - [Model strategy](model-strategy.md) — pooled base + per-user fine-tune, why
 - [Data quality](data-quality.md) — dedup, conflicts, what actually hurts accuracy
 - [OCR pipeline](ocr-pipeline.md) — end-to-end, Azure + DocTR + TrOCR
