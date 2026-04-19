@@ -212,6 +212,22 @@ Available skills in `.claude/skills/`:
 - `/supabase` — Supabase database management
 - `/cloudflare-dns` — DNS management for ksavyad.com
 
+## Wiki
+
+Product strategy, pricing, offline-product spec, model strategy, data-quality notes, roadmap, and decision log live in `wiki/`. Start at `wiki/index.md`. Update proactively when strategy or architecture changes.
+
+## Infrastructure IDs
+- Railway project: `9cb5b562-6854-464d-b4b7-fd9ba8b041d4`
+- Railway service: `49600374-a47c-4ada-8fc6-095b683c54d4`
+- Supabase project: `ushngszdltlctmqlwgot` (region: us-east-1)
+- Supabase pooler: `aws-1-us-east-1.pooler.supabase.com` (NOT aws-0)
+- Cloudflare zone: `2df4edb4071417959108d83e9be051c5`
+- Cloudflare Tunnel: `trocr.ksavyad.com` → `localhost:8765` (tunnel ID: `e28ffe57-2733-490b-87ac-fb8d6e9641c2`)
+
+## Talmudic Dictionary
+- Post-processing uses curated vocab + 196 pages of Sefaria Talmud text (2,667 words, 1,915 bigrams)
+- Training data: ~2,185 clean examples → ~33% CER; need ~5k for 20-30% CER range
+
 ## Development
 
 ```bash
