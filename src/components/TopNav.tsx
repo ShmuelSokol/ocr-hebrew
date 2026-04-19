@@ -2,6 +2,7 @@
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
@@ -10,9 +11,26 @@ const NAV = [
   { href: "/settings", label: "Settings" },
 ];
 
+interface Credits {
+  letters: number;
+  approxPages: number;
+  low: boolean;
+}
+
 export default function TopNav() {
   const { data: session } = useSession();
   const pathname = usePathname();
+  const [credits, setCredits] = useState<Credits | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!session) return;
+    fetch("/api/credits")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setCredits(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [session, pathname]);
 
   return (
     <nav className="sticky top-0 z-30 bg-white border-b border-gray-200">
@@ -39,6 +57,20 @@ export default function TopNav() {
           })}
         </div>
         <div className="flex items-center gap-3">
+          {credits && (
+            <span
+              className={`text-xs px-2 py-1 rounded font-medium whitespace-nowrap ${
+                credits.low
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-green-50 text-green-700"
+              }`}
+              title={`${credits.letters.toLocaleString()} letters remaining (~${credits.approxPages} pages)`}
+            >
+              {credits.letters.toLocaleString()} letters
+              <span className="text-gray-500 font-normal"> · ~{credits.approxPages}p</span>
+              {credits.low && <Link href="/settings/billing" className="ml-2 underline hover:no-underline">Top up</Link>}
+            </span>
+          )}
           <span className="text-xs text-gray-400 hidden sm:inline">{session?.user?.email}</span>
           <button
             onClick={() => signOut()}

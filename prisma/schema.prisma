@@ -10,17 +10,42 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String?
-  passwordHash String
-  createdAt    DateTime  @default(now())
-  lastSeenAt   DateTime?
-  lastAction   String?
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String?
+  passwordHash   String
+  createdAt      DateTime  @default(now())
+  lastSeenAt     DateTime?
+  lastAction     String?
+  creditsBalance Int       @default(20000)
   files        File[]
   projects     Project[]
   profiles     HandwritingProfile[]
   tokenUsage   TokenUsage[]
+  creditTransactions CreditTransaction[]
+}
+
+model CreditTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  delta       Int
+  kind        String
+  note        String?
+  reference   String?
+  createdAt   DateTime @default(now())
+}
+
+model SampleRequest {
+  id              String   @id @default(cuid())
+  email           String
+  name            String?
+  phone           String?
+  writerDescription String?
+  pageCount       Int?
+  status          String   @default("new")
+  source          String?
+  createdAt       DateTime @default(now())
 }
 
 model HandwritingProfile {
