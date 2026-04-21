@@ -29,5 +29,21 @@ export async function GET(
     },
   });
 
-  return NextResponse.json(result);
+  if (!result) return NextResponse.json(null);
+
+  // Find which words already have a saved TrainingExample (i.e. "confirmed correct").
+  // We store the word ID in TrainingExample.sourceLineId — sticking with that convention.
+  const wordIds = result.lines.flatMap((l) => l.words.map((w) => w.id));
+  let confirmedWordIds: string[] = [];
+  if (wordIds.length) {
+    const examples = await prisma.trainingExample.findMany({
+      where: { sourceLineId: { in: wordIds } },
+      select: { sourceLineId: true },
+    });
+    confirmedWordIds = examples
+      .map((e) => e.sourceLineId)
+      .filter((id): id is string => id !== null);
+  }
+
+  return NextResponse.json({ ...result, confirmedWordIds });
 }

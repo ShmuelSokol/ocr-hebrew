@@ -237,6 +237,9 @@ export default function EditorPage() {
     }
     if (resultData?.id) {
       setResult(resultData);
+      if (Array.isArray(resultData.confirmedWordIds)) {
+        setConfirmedWords(new Set(resultData.confirmedWordIds));
+      }
       const corrected = resultData.lines.reduce(
         (sum: number, line: Line) =>
           sum + line.words.filter((w: Word) => w.correctedText && w.correctedText !== w.rawText).length,
@@ -484,6 +487,9 @@ export default function EditorPage() {
     }
     if (resultData?.id) {
       setResult(resultData);
+      if (Array.isArray(resultData.confirmedWordIds)) {
+        setConfirmedWords(new Set(resultData.confirmedWordIds));
+      }
       const corrected = resultData.lines.reduce(
         (sum: number, line: Line) =>
           sum + line.words.filter((w: Word) => w.correctedText && w.correctedText !== w.rawText).length,
