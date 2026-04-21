@@ -97,6 +97,55 @@ function LineCropCanvas({ imgEl, line, maxHeight = 80 }: {
   return <canvas ref={canvasRef} className="w-full block" />;
 }
 
+// Line band with the current word highlighted — used in the sticky editor bar
+// so the user keeps reading context while correcting a single word.
+function LineCropWithHighlight({ imgEl, line, word, maxHeight = 60, imageVersion = 0 }: {
+  imgEl: HTMLImageElement | null;
+  line: Line;
+  word: Word;
+  maxHeight?: number;
+  imageVersion?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgEl || !imgEl.complete || !imgEl.naturalWidth) return;
+    const srcH = line.yBottom - line.yTop;
+    if (srcH <= 0) return;
+
+    const scale = Math.min(1, maxHeight / srcH);
+    const w = Math.round(imgEl.naturalWidth * scale);
+    const h = Math.max(20, Math.round(srcH * scale));
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(imgEl, 0, line.yTop, imgEl.naturalWidth, srcH, 0, 0, w, h);
+
+    // Highlight current word
+    if (word.xLeft != null && word.xRight != null) {
+      const wordTop = word.yTop ?? line.yTop;
+      const wordBottom = word.yBottom ?? line.yBottom;
+      const rx = word.xLeft * scale;
+      const ry = (wordTop - line.yTop) * scale;
+      const rw = (word.xRight - word.xLeft) * scale;
+      const rh = (wordBottom - wordTop) * scale;
+
+      // Soft amber fill
+      ctx.fillStyle = "rgba(251, 146, 60, 0.25)";
+      ctx.fillRect(rx, ry, rw, rh);
+      // Bright amber stroke
+      ctx.strokeStyle = "rgb(234, 88, 12)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(rx, ry, rw, rh);
+    }
+  }, [imgEl, line.yTop, line.yBottom, word.xLeft, word.xRight, word.yTop, word.yBottom, maxHeight, imageVersion]);
+
+  return <canvas ref={canvasRef} className="w-full block" dir="ltr" />;
+}
+
 const RERUN_THRESHOLD = 5;
 
 export default function EditorPage() {
@@ -1489,6 +1538,14 @@ export default function EditorPage() {
         const isLast = wordIdx >= allWords.length - 1;
         return (
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-orange-400 shadow-lg z-50 px-3 py-2 sm:px-4 sm:py-3 safe-bottom">
+            {/* Line context strip — always visible while editing, keyboard or no keyboard */}
+            <div className="max-w-5xl mx-auto mb-2 bg-slate-50 border border-slate-200 rounded overflow-hidden">
+              <div className="flex items-center justify-between px-2 py-1 text-[10px] text-slate-500 border-b border-slate-200">
+                <span>Line {selectedLine.lineIndex + 1} · word {wordIdx + 1} of {allWords.length}</span>
+                {selectedLine.correctedText && <span className="truncate max-w-[60%] text-slate-600" dir="rtl">{selectedLine.correctedText}</span>}
+              </div>
+              <LineCropWithHighlight imgEl={imageRef.current} line={selectedLine} word={selectedWord} maxHeight={56} imageVersion={imageVersion} key={`lcwh-${selectedLine.id}-${selectedWord.id}-${imageVersion}`} />
+            </div>
             <div className="max-w-5xl mx-auto space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
               {/* Prev button */}
               <button onClick={() => saveAndPrev(selectedWord!.id, editValue)} disabled={isFirst}
