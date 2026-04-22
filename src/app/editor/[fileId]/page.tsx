@@ -30,6 +30,7 @@ interface OCRResult {
   id: string;
   rawText: string;
   lines: Line[];
+  engineUsed?: "doctr" | "azure" | "unknown";
 }
 
 interface DetectedLine {
@@ -1320,6 +1321,16 @@ export default function EditorPage() {
             <span className="text-gray-500">Project: <button onClick={() => router.push(`/projects/${projectId}`)} className="font-semibold text-blue-600 hover:underline">{projectName}</button></span>
           )}
           {profileName && <span className="text-gray-500">Profile: <strong>{profileName}</strong></span>}
+          {result?.engineUsed === "doctr" && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-xs font-medium" title="This file was processed by the in-house DocTR+TrOCR pipeline">
+              Engine: DocTR + TrOCR (in-house)
+            </span>
+          )}
+          {result?.engineUsed === "azure" && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-xs font-medium" title="This file was processed by Azure Document Intelligence">
+              Engine: Azure
+            </span>
+          )}
           <button onClick={() => { if (showTrainingExamples) setShowTrainingExamples(false); else loadTrainingExamples(); }}
             className={`px-2 py-1 rounded text-xs font-medium ${showTrainingExamples ? "bg-purple-500 text-white" : "bg-purple-100 hover:bg-purple-200 text-purple-700"}`}>
             {showTrainingExamples ? "Hide Training" : `Training Examples (${trainingExamples.length || "?"})`}
@@ -1478,15 +1489,17 @@ export default function EditorPage() {
             </div>
           )}
           {result && result.lines.some(l => l.words.some(w => w.modelText)) && (
-            <div className="mt-3 flex items-center gap-2">
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
               <span className="text-xs text-gray-500">Show text from:</span>
               <button onClick={() => setTextSource("azure")}
-                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "azure" ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}>
-                Azure
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "azure" ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+                title="The original OCR pass that ran on this file — DocTR if you used in-house, Azure if you used cloud">
+                {result.engineUsed === "doctr" ? "DocTR (in-house)" : result.engineUsed === "azure" ? "Azure" : "Original OCR"}
               </button>
               <button onClick={() => setTextSource("trocr")}
-                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "trocr" ? "bg-indigo-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}>
-                TrOCR
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${textSource === "trocr" ? "bg-indigo-500 text-white" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+                title="A second-pass TrOCR re-reading of each word crop">
+                TrOCR re-run
               </button>
               <button onClick={runTrOCR} disabled={trocrRunning}
                 className="text-xs text-indigo-500 hover:text-indigo-700 underline disabled:opacity-50 ml-2">

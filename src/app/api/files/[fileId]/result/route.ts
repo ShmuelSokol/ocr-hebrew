@@ -45,5 +45,15 @@ export async function GET(
       .filter((id): id is string => id !== null);
   }
 
-  return NextResponse.json({ ...result, confirmedWordIds });
+  // Which engine produced this result? Inferred from the latest TokenUsage row.
+  const lastUsage = await prisma.tokenUsage.findFirst({
+    where: { fileId: file.id },
+    orderBy: { createdAt: "desc" },
+    select: { model: true },
+  });
+  let engineUsed: "doctr" | "azure" | "unknown" = "unknown";
+  if (lastUsage?.model === "doctr-trocr") engineUsed = "doctr";
+  else if (lastUsage?.model === "azure-doc-intelligence") engineUsed = "azure";
+
+  return NextResponse.json({ ...result, confirmedWordIds, engineUsed });
 }
